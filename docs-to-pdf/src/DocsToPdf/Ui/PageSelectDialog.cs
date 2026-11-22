@@ -167,6 +167,9 @@ internal sealed class PageSelectDialog : Form
         ShowSelection(writeBox: true);
     }
 
+    /// <summary>開く前に、選んでおくページを「1-3,10-12」の形で渡す。読めない指定は、欄に書いたときと同じく知らせる。</summary>
+    public void Preselect(string pages) => _pagesBox.Text = pages;
+
     /// <summary>保存した PDF のパス（保存したあと）。</summary>
     public string? Written { get; private set; }
 

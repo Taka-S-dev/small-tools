@@ -8,9 +8,12 @@ namespace DocsToPdf;
 ///   --out 保存先.pdf   画面の操作なしで結合して終了する（成功 0、失敗 1）
 ///   --page-numbers / --toc / --duplex   ページ番号・目次・両面印刷用の白紙
 ///   --open             作成後に PDF を開く
+///   --pick [範囲]      最初のファイルの「ページを選んで保存」を、そのページを選んだ状態で開く（例: --pick 1-3 10-12）
+///   --split            最初のファイルの「分割」を開く
 /// </summary>
 internal sealed record StartupOptions(
-    string[] Paths, string? Output, bool PageNumbers, bool TableOfContents, bool DuplexBlanks, bool Open)
+    string[] Paths, string? Output, bool PageNumbers, bool TableOfContents, bool DuplexBlanks, bool Open,
+    StartupDialog? Dialog = null)
 {
     public bool IsBatch => Output is not null;
 
@@ -19,6 +22,7 @@ internal sealed record StartupOptions(
         var paths = new List<string>();
         string? output = null;
         bool numbers = false, toc = false, duplex = false, open = false;
+        StartupDialog? dialog = null;
 
         for (int i = 0; i < args.Length; i++)
         {
@@ -40,13 +44,46 @@ internal sealed record StartupOptions(
                 case "--open":
                     open = true;
                     break;
+                case "--split":
+                    dialog = new StartupDialog(Split: true, "");
+                    break;
+                case "--pick":
+                    // 続く引数のうち、ページ指定として読めて、ファイルやフォルダではないものを範囲とみなす
+                    var ranges = new List<string>();
+                    while (i + 1 < args.Length && StartupDialog.IsRange(args[i + 1])) ranges.Add(args[++i]);
+                    dialog = new StartupDialog(Split: false, PageRange.Normalize(string.Join(",", ranges)));
+                    break;
+                case var pick when pick.StartsWith(StartupDialog.PickPrefix):
+                    dialog = new StartupDialog(Split: false, PageRange.Normalize(arg[StartupDialog.PickPrefix.Length..]));
+                    break;
                 default:
                     if (!string.IsNullOrWhiteSpace(arg)) paths.Add(arg);
                     break;
             }
         }
-        return new StartupOptions([.. paths], output, numbers, toc, duplex, open);
+        return new StartupOptions([.. paths], output, numbers, toc, duplex, open, dialog);
     }
+}
+
+/// <summary>
+/// ファイルを入れたあとに開く画面。Pages は「ページを選んで保存」で最初から選んでおくページ（空なら選ばない）。
+/// すでに起動しているウィンドウへは、ファイルのパスと同じ行の並びに 1 行（--pick=範囲 か --split）で送る。
+/// </summary>
+internal sealed record StartupDialog(bool Split, string Pages)
+{
+    public const string PickPrefix = "--pick=";
+    private const string SplitLine = "--split";
+
+    public static bool IsRange(string arg) =>
+        PageRange.Normalize(arg).Length > 0 && PageRange.IsValid(arg) && !File.Exists(arg) && !Directory.Exists(arg);
+
+    public string ToLine() => Split ? SplitLine : PickPrefix + Pages;
+
+    /// <summary>送られてきた行が画面の指定なら読む。ファイルのパス（いつも絶対パス）なら null。</summary>
+    public static StartupDialog? FromLine(string line) =>
+        line == SplitLine ? new StartupDialog(true, "")
+        : line.StartsWith(PickPrefix, StringComparison.Ordinal) ? new StartupDialog(false, PageRange.Normalize(line[PickPrefix.Length..]))
+        : null;
 }
 
 internal static class Program
@@ -61,7 +98,9 @@ internal static class Program
         SingleInstance? instance = null;
         if (!options.IsBatch)
         {
-            instance = SingleInstance.Acquire(options.Paths);
+            // 画面の指定は、パスのあとに 1 行で添える（パスはいつも絶対パスなので、行の頭の「--」と見分けられる）
+            string[] lines = [.. options.Paths.Select(Path.GetFullPath), .. options.Dialog is { } d ? [d.ToLine()] : Array.Empty<string>()];
+            instance = SingleInstance.Acquire(lines);
             if (instance is null) return 0;
         }
 
@@ -83,7 +122,7 @@ internal static class Program
 
             TempWorkspace.CleanupStale();
             using var form = new MainForm(options);
-            instance?.Listen(form.ReceivePaths);
+            instance?.Listen(form.ReceiveLines);
             Application.Run(form);
             return form.ExitCode;
         }

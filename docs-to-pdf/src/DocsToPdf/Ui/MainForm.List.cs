@@ -651,14 +651,31 @@ internal sealed partial class MainForm
         if (SelectedEntries().Take(2).ToList() is [var entry]) ExtractPages(entry);
     }
 
-    /// <summary>1 ファイルから選んだページだけを 1 つの PDF に保存する。結合の一覧そのものは変えない。</summary>
-    private void ExtractPages(FileEntry entry)
+    /// <summary>
+    /// 1 ファイルから選んだページだけを 1 つの PDF に保存する。結合の一覧そのものは変えない。
+    /// pages を渡すと、そのページを選んだ状態で開く（起動の指定 --pick から）。
+    /// </summary>
+    private void ExtractPages(FileEntry entry, string pages = "")
     {
         if (_busy || entry.Converted is null) return;
         using var dialog = new PageSelectDialog(entry);
+        if (pages.Length > 0) dialog.Preselect(pages);
         if (dialog.ShowDialog(this) != DialogResult.OK || dialog.Written is not { } written) return;
         SetCreatedStatus(written, 1, dialog.WrittenPages);
         if (_optOpen.Checked) ShellOpen(written);
+    }
+
+    /// <summary>一覧でその行だけを選び、見える位置まで送る（プレビューにもその行が出る）。</summary>
+    private void SelectEntry(FileEntry entry)
+    {
+        foreach (ListViewItem item in _list.Items)
+        {
+            bool match = ReferenceEquals(item.Tag, entry);
+            item.Selected = match;
+            if (!match) continue;
+            item.Focused = true;
+            item.EnsureVisible();
+        }
     }
 
     private void SplitSelected()

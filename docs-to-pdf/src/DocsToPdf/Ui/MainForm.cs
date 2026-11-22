@@ -77,7 +77,7 @@ internal sealed partial class MainForm : Form
     private readonly Button _cancel = new() { Text = "中止", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Enabled = false };
     private readonly ToolTip _toolTip = new();
 
-    /// <summary>画面が出る前に、あとから起動された自分が送ってきたファイル。画面が出たら一覧に加える。</summary>
+    /// <summary>画面が出る前に、あとから起動された自分が送ってきた行（ファイルと画面の指定）。画面が出たら一覧に加える。</summary>
     private readonly List<string> _earlyPaths = [];
     private bool _shown;
 
@@ -297,7 +297,7 @@ internal sealed partial class MainForm : Form
         _preview.PageRotateRequested += RotatePage;
         _preview.ChooseSheetsRequested += ChooseSheets;
         _preview.SplitRequested += Split;
-        _preview.ExtractRequested += ExtractPages;
+        _preview.ExtractRequested += entry => ExtractPages(entry);
         _preview.PasswordRequested += AskPassword;
         _preview.RetryRequested += entry => Retry([entry]);
         _preview.UseAllPagesRequested += entry => SetPageRange(entry, "");
@@ -348,8 +348,10 @@ internal sealed partial class MainForm : Form
             early = [.. _earlyPaths];
             _earlyPaths.Clear();
         }
-        if (_startup.Paths.Length + early.Length > 0)
-            await AddPathsAsync([.. _startup.Paths, .. early], null);
+        var (earlyPaths, earlyDialog) = ReadLines(early);
+        string[] paths = [.. _startup.Paths, .. earlyPaths];
+        if (paths.Length > 0)
+            await AddPathsAsync(paths, null);
 
         if (_startup.Output is { } output)
         {
@@ -358,6 +360,55 @@ internal sealed partial class MainForm : Form
             ExitCode = ok ? 0 : 1;
             Close();
         }
+        else if ((earlyDialog ?? _startup.Dialog) is { } dialog)
+        {
+            await OpenRequestedAsync(earlyDialog is null ? _startup.Paths : earlyPaths, dialog);
+        }
+    }
+
+    private async Task AddThenOpenAsync(string[] paths, StartupDialog? dialog)
+    {
+        await AddPathsAsync(paths, null);
+        if (dialog is not null) await OpenRequestedAsync(paths, dialog);
+    }
+
+    /// <summary>送られてきた行を、ファイルのパスと画面の指定（最後のもの）に分ける。</summary>
+    private static (string[] Paths, StartupDialog? Dialog) ReadLines(IEnumerable<string> lines)
+    {
+        var paths = new List<string>();
+        StartupDialog? dialog = null;
+        foreach (var line in lines)
+        {
+            if (StartupDialog.FromLine(line) is { } d) dialog = d;
+            else paths.Add(line);
+        }
+        return ([.. paths], dialog);
+    }
+
+    /// <summary>
+    /// 起動の指定（--pick / --split）で、渡された最初のファイルの画面を開く。変換が終わるのを待ってから開く。
+    /// 変換できなかったときは、一覧にその理由が出ているので、画面は開かない。
+    /// </summary>
+    private async Task OpenRequestedAsync(IReadOnlyList<string> paths, StartupDialog request)
+    {
+        string? first = paths.Select(p => Path.GetFullPath(p)).FirstOrDefault(File.Exists);
+        var entry = Entries().FirstOrDefault(e => string.Equals(e.Path, first, StringComparison.OrdinalIgnoreCase));
+        if (entry is null)
+        {
+            SetStatus(request.Split ? "分割するファイルが指定されていません。" : "ページを選ぶファイルが指定されていません。");
+            return;
+        }
+        SelectEntry(entry);
+        while (entry.IsBusy && !IsDisposed) await Task.Delay(100);
+        if (IsDisposed || entry.State != EntryState.Ready || !Entries().Contains(entry)) return;
+        // ほかのダイアログが開いている（このウィンドウが操作できない）ときは、重ねて開かない
+        if (!CanFocus)
+        {
+            SetStatus($"ほかの画面が開いているため、{entry.FileName} の{(request.Split ? "分割" : "ページを選んで保存")}の画面を開けませんでした。");
+            return;
+        }
+        if (request.Split) Split(entry);
+        else ExtractPages(entry, request.Pages);
     }
 
     protected override void OnActivated(EventArgs e)
@@ -533,18 +584,19 @@ internal sealed partial class MainForm : Form
         });
     }
 
-    /// <summary>あとから起動された自分が送ってきたファイルを、このウィンドウのリストに加える。</summary>
-    public void ReceivePaths(string[] paths)
+    /// <summary>あとから起動された自分が送ってきたファイルを、このウィンドウのリストに加え、画面の指定があれば開く。</summary>
+    public void ReceiveLines(string[] lines)
     {
         if (IsDisposed) return;
         lock (_earlyPaths)
         {
             if (!_shown)
             {
-                _earlyPaths.AddRange(paths);
+                _earlyPaths.AddRange(lines);
                 return;
             }
         }
+        var (paths, dialog) = ReadLines(lines);
         try
         {
             BeginInvoke(() =>
@@ -553,7 +605,7 @@ internal sealed partial class MainForm : Form
                 Activate();
                 if (paths.Length == 0) return;
                 if (_busy) SetStatus("作成中のため、ファイルを追加できませんでした。終わってからもう一度追加してください。");
-                else _ = AddPathsAsync(paths, null);
+                else _ = AddThenOpenAsync(paths, dialog);
             });
         }
         catch (InvalidOperationException) { /* 閉じている途中 */ }

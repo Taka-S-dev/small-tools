@@ -152,8 +152,8 @@ internal sealed class SingleInstance : IDisposable
         _pipeName = pipeName;
     }
 
-    /// <summary>最初の起動なら自分を返す。すでに起動していれば paths を送って null を返す。</summary>
-    public static SingleInstance? Acquire(string[] paths)
+    /// <summary>最初の起動なら自分を返す。すでに起動していれば lines（絶対パスと画面の指定）を送って null を返す。</summary>
+    public static SingleInstance? Acquire(string[] lines)
     {
         // パイプの名前はマシン全体で 1 つなので、利用者（SID）とセッションで分け、二重起動の判定（Local\ はセッションごと）とそろえる
         string user = WindowsIdentity.GetCurrent().User?.Value ?? Convert.ToHexString(Encoding.UTF8.GetBytes(Environment.UserName));
@@ -170,7 +170,7 @@ internal sealed class SingleInstance : IDisposable
             using var client = new NamedPipeClientStream(".", name, PipeDirection.Out, PipeOptions.CurrentUserOnly);
             client.Connect(10_000);
             using var writer = new StreamWriter(client, new UTF8Encoding(false));
-            foreach (var path in paths) writer.WriteLine(Path.GetFullPath(path));
+            foreach (var line in lines) writer.WriteLine(line);
         }
         catch
         {
@@ -179,8 +179,8 @@ internal sealed class SingleInstance : IDisposable
         return null;
     }
 
-    /// <summary>あとから起動されたときに送られてくるファイルを受け取り始める。</summary>
-    public void Listen(Action<string[]> onPaths)
+    /// <summary>あとから起動されたときに送られてくる行（ファイルのパスと画面の指定）を受け取り始める。</summary>
+    public void Listen(Action<string[]> onLines)
     {
         _ = Task.Run(async () =>
         {
@@ -193,7 +193,7 @@ internal sealed class SingleInstance : IDisposable
                     await server.WaitForConnectionAsync(_stop.Token);
                     using var reader = new StreamReader(server, Encoding.UTF8);
                     string text = await reader.ReadToEndAsync(_stop.Token);
-                    onPaths(text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+                    onLines(text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
                 }
                 catch (OperationCanceledException)
                 {

@@ -20,6 +20,11 @@ internal static class Program
 {
     private static readonly Option<bool> Quiet = new("--quiet", "-q") { Description = "進み具合を表示しない（エラーと結果のパスだけを出す）" };
     private static readonly Option<bool> Force = new("--force", "-f") { Description = "出力先に同じ名前のファイルがあれば上書きする" };
+    private static readonly Option<int?> BookmarkDepth = new("--bookmark-depth")
+    {
+        Description = "元のファイルのしおり（Word の見出しなど）を N 段まで付ける。0 なら付けない（既定はすべて）",
+        HelpName = "N",
+    };
     private static readonly Option<int> Timeout = new("--timeout")
     {
         Description = "1 ファイルの変換を待つ時間（分）。過ぎると Office を止めて失敗にする",
@@ -32,6 +37,10 @@ internal static class Program
         Timeout.Validators.Add(r =>
         {
             if (r.GetValueOrDefault<int>() < 1) r.AddError("--timeout は 1 以上の分で指定してください。");
+        });
+        BookmarkDepth.Validators.Add(r =>
+        {
+            if (r.GetValueOrDefault<int?>() < 0) r.AddError("--bookmark-depth は 0 以上で指定してください。");
         });
 
         var root = BuildRoot();
@@ -124,15 +133,15 @@ internal static class Program
             "Word・Excel・PowerPoint・画像を、ファイルごとに PDF にする（同じ名前の .pdf を隣に作る）。\n" +
             "1 つにまとめるときは merge、PDF を分けるときは split、ページを抜き出すときは extract を使う。")
         {
-            inputs, output, numbers, Force, Timeout, Quiet,
+            inputs, output, numbers, BookmarkDepth, Force, Timeout, Quiet,
         };
         root.SetAction((result, ct) => ConvertEachAsync(
-            result.GetValue(inputs) ?? [], result.GetValue(output), result.GetValue(numbers),
+            result.GetValue(inputs) ?? [], result.GetValue(output), result.GetValue(numbers), result.GetValue(BookmarkDepth),
             result.GetValue(Force), result.GetValue(Timeout), new Log(result.GetValue(Quiet)), ct));
         return root;
     }
 
-    private static async Task<int> ConvertEachAsync(string[] inputs, string? output, bool pageNumbers, bool force,
+    private static async Task<int> ConvertEachAsync(string[] inputs, string? output, bool pageNumbers, int? outlineDepth, bool force,
         int timeoutMinutes, Log log, CancellationToken ct)
     {
         if (inputs.Length == 0)
@@ -169,7 +178,7 @@ internal static class Program
                 var part = new MergePart(pdf.PdfPath, Path.GetFileNameWithoutExtension(files[i]),
                     Enumerable.Range(0, pdf.PageCount).ToArray(), pdf.Outline);
                 Directory.CreateDirectory(Path.GetDirectoryName(targets[i])!);
-                await Task.Run(() => IndividualPdf.Write(part, targets[i], pageNumbers, ct), ct);
+                await Task.Run(() => IndividualPdf.Write(part, targets[i], pageNumbers, ct, outlineDepth), ct);
                 log.Result(targets[i]);
                 written++;
             });
@@ -198,22 +207,30 @@ internal static class Program
         var duplex = new Option<bool>("--duplex") { Description = "各ファイルが奇数ページから始まるよう、白紙を挟む（両面印刷用）" };
         var title = new Option<string?>("--title") { Description = "PDF の文書のタイトル（既定は出力のファイル名）", HelpName = "題名" };
         var open = new Option<bool>("--open") { Description = "作ったあと、既定のアプリで開く" };
+        var flat = new Option<bool>("--no-folder-bookmarks")
+        {
+            Description = "フォルダを渡したとき、しおりをフォルダごとにまとめない（既定では、フォルダの段の下にファイルのしおりを入れる）",
+        };
 
         var command = new Command("merge", "ファイルを PDF にして、ファイルごとのしおりを付けて 1 つに結合する")
         {
-            inputs, output, toc, numbers, duplex, title, open, Force, Timeout, Quiet,
+            inputs, output, toc, numbers, duplex, title, BookmarkDepth, flat, open, Force, Timeout, Quiet,
         };
         command.SetAction((result, ct) => MergeAsync(
             result.GetValue(inputs)!, result.GetValue(output)!,
-            new MergeOptions(result.GetValue(numbers), result.GetValue(toc), result.GetValue(duplex), result.GetValue(title) ?? ""),
-            result.GetValue(open), result.GetValue(Force), result.GetValue(Timeout), new Log(result.GetValue(Quiet)), ct));
+            new MergeOptions(result.GetValue(numbers), result.GetValue(toc), result.GetValue(duplex), result.GetValue(title) ?? "")
+            {
+                OutlineDepth = result.GetValue(BookmarkDepth),
+            },
+            !result.GetValue(flat), result.GetValue(open), result.GetValue(Force), result.GetValue(Timeout), new Log(result.GetValue(Quiet)), ct));
         return command;
     }
 
-    private static async Task<int> MergeAsync(string[] inputs, string output, MergeOptions options, bool open, bool force,
+    private static async Task<int> MergeAsync(string[] inputs, string output, MergeOptions options, bool folderBookmarks, bool open, bool force,
         int timeoutMinutes, Log log, CancellationToken ct)
     {
-        var (files, rejected) = InputFiles.Expand(inputs, sortAll: false); // 書いた順に結合する
+        var expanded = InputFiles.Expand(inputs, sortAll: false); // 書いた順に結合する
+        var (files, rejected) = expanded;
         foreach (var path in rejected) log.Error($"見つからないか、扱えない形式です: {path}");
         if (rejected.Count > 0) return ExitCodes.Usage;
         if (files.Count == 0)
@@ -239,8 +256,15 @@ internal static class Program
                 return ExitCodes.Failure;
             }
 
-            var parts = files.Select((file, i) => new MergePart(converted[i].PdfPath, Path.GetFileNameWithoutExtension(file),
-                Enumerable.Range(0, converted[i].PageCount).ToArray(), converted[i].Outline)).ToList();
+            var folders = folderBookmarks ? BookmarkFolders.Of(files, files.Select(expanded.RootOf).ToList()) : null;
+            var parts = files.Select((file, i) =>
+            {
+                var pdf = converted[i];
+                return new MergePart(pdf.PdfPath, Path.GetFileNameWithoutExtension(file), Enumerable.Range(0, pdf.PageCount).ToArray(), pdf.Outline)
+                {
+                    Folders = folders?[i] ?? [],
+                };
+            }).ToList();
             if (options.DocumentTitle.Length == 0) options = options with { DocumentTitle = Path.GetFileNameWithoutExtension(target) };
 
             log.Progress("結合しています...");

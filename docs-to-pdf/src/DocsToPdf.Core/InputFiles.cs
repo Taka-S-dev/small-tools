@@ -5,7 +5,14 @@ internal static class InputFiles
 {
     /// <param name="Files">扱えるファイル（完全なパス、重複なし）。</param>
     /// <param name="Rejected">見つからない、または扱えない形式だったもの（渡されたままの表記）。</param>
-    public sealed record Result(IReadOnlyList<string> Files, IReadOnlyList<string> Rejected);
+    public sealed record Result(IReadOnlyList<string> Files, IReadOnlyList<string> Rejected)
+    {
+        /// <summary>フォルダの中から見つけたファイル → そのフォルダ（渡されたフォルダ。しおりをフォルダごとにまとめるのに使う）。</summary>
+        public IReadOnlyDictionary<string, string> Roots { get; init; } = new Dictionary<string, string>();
+
+        /// <summary>そのファイルを見つけたフォルダ。直接渡されたファイルなら null。</summary>
+        public string? RootOf(string file) => Roots.TryGetValue(file, out var root) ? root : null;
+    }
 
     /// <summary>
     /// フォルダはサブフォルダの中も含めて探し、その中はパスの順（数字は数値として）に並べる。
@@ -22,6 +29,9 @@ internal static class InputFiles
     {
         var files = new List<string>();
         var rejected = new List<string>();
+        // 同じファイルが重なったときは最初の 1 つを残すので、フォルダも最初に見つけたときのものにする
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var roots = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         int scanned = 0;
         foreach (var raw in paths)
         {
@@ -47,10 +57,13 @@ internal static class InputFiles
                 }
                 found.Sort(NaturalStringComparer.Instance);
                 files.AddRange(found);
+                foreach (var file in found)
+                    if (seen.Add(file)) roots[file] = path;
             }
             else if (File.Exists(path) && FileEntry.TryGetKind(path, out _))
             {
                 files.Add(path);
+                seen.Add(path);
             }
             else
             {
@@ -60,6 +73,6 @@ internal static class InputFiles
 
         var unique = files.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         if (sortAll) unique.Sort(NaturalStringComparer.Instance);
-        return new Result(unique, rejected);
+        return new Result(unique, rejected) { Roots = roots };
     }
 }

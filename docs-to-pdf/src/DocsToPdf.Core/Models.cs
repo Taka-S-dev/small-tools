@@ -96,6 +96,8 @@ internal sealed class FileEntry
 
     public string Path { get; }
     public FileKind Kind { get; }
+    /// <summary>フォルダを入れて見つけたファイルなら、そのフォルダ。しおりをフォルダごとにまとめるのに使う。</summary>
+    public string? Root { get; init; }
     public string FileName => System.IO.Path.GetFileName(Path);
     public string DefaultTitle => System.IO.Path.GetFileNameWithoutExtension(Path);
 

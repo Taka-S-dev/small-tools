@@ -47,6 +47,8 @@ internal static class IndividualPdf
     /// 目次と両面印刷用の白紙は、1 ファイルでは意味がないので付けない。
     /// </summary>
     /// <returns>書き出した PDF のページ数。</returns>
-    public static int Write(MergePart part, string outputPath, bool pageNumbers, CancellationToken ct = default) =>
-        PdfMerger.Merge([part], new MergeOptions(pageNumbers, false, false, part.Title) { FileBookmarks = false }, outputPath, ct: ct);
+    /// <param name="outlineDepth">元のしおりを何段まで付けるか。null ならすべて、0 なら付けない。</param>
+    public static int Write(MergePart part, string outputPath, bool pageNumbers, CancellationToken ct = default, int? outlineDepth = null) =>
+        PdfMerger.Merge([part], new MergeOptions(pageNumbers, false, false, part.Title) { FileBookmarks = false, OutlineDepth = outlineDepth },
+            outputPath, ct: ct);
 }

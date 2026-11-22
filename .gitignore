@@ -1,0 +1,53 @@
+# 許可リスト: ここに挙げたものだけを追跡する（新しいツールを足すときは、そのフォルダを 1 行足す）
+/*
+!/.gitignore
+!/.gitattributes
+!/LICENSE
+!/README.md
+!/docs-to-pdf/
+
+# 許可の後ろで、どのフォルダの中でもビルドの成果物と機密を拒否し直す
+bin/
+obj/
+publish/
+TestResults/
+.vs/
+.vscode/
+.idea/
+*.user
+.env
+.env.*
+*.pem
+*.key
+*.pfx
+*.snk
+id_rsa*
+id_ed25519*
+secrets.*
+credentials.*
+*.local.json
+*.log
+
+# 動作の確認に使った手元の文書（テストの入力はコードの中で作る）
+*.pdf
+*.doc
+*.docx
+*.docm
+*.rtf
+*.xls
+*.xlsx
+*.xlsm
+*.xlsb
+*.ppt
+*.pptx
+*.pptm
+*.pps
+*.ppsx
+
+# AI ツールの設定やメモは、どのフォルダに置いても追跡しない
+.claude/
+CLAUDE.md
+CLAUDE.local.md
+AGENTS.md
+.cursor/
+.github/copilot-instructions.md

@@ -1,0 +1,19 @@
+# 改行の扱いをそろえる（取り出すと各 OS の改行になり、リポジトリの中は LF で持つ）
+* text=auto
+
+# 差分を言語に合わせて読みやすくする
+*.cs      text diff=csharp
+*.csproj  text
+*.slnx    text
+*.props   text
+*.md      text diff=markdown
+
+# Windows でしか使わないものは CRLF のまま取り出す
+*.cmd     text eol=crlf
+*.bat     text eol=crlf
+*.ps1     text eol=crlf
+
+# 中身を変換しないもの
+*.ico     binary
+*.png     binary
+*.pdf     binary

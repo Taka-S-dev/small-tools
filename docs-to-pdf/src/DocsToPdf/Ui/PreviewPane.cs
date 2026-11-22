@@ -55,6 +55,26 @@ internal sealed class PdfPageRenderer
             270 => RotateFlipType.Rotate270FlipNone,
             _ => RotateFlipType.RotateNoneFlipNone,
         });
+
+        // Windows の PDF 描画は、幅を画素ではなく表示倍率を掛けた単位で受け取るため、頼んだ幅の 2 倍などで返ってくる。
+        // 描く側は表示する大きさの画像を 1 対 1 で置く（間引いて縮めると細い線や文字がつぶれる）ので、
+        // ここで表示するちょうどの大きさに、丁寧に縮めて（大きく返ってきた分はかえって滑らかになる）そろえる
+        if (image.Width != displayWidth || image.Height != displayHeight)
+        {
+            var fitted = new Bitmap(Math.Max(1, displayWidth), Math.Max(1, displayHeight));
+            using (var g = Graphics.FromImage(fitted))
+            {
+                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                g.SmoothingMode = SmoothingMode.HighQuality;
+                g.CompositingQuality = CompositingQuality.HighQuality;
+                using var wrap = new System.Drawing.Imaging.ImageAttributes();
+                wrap.SetWrapMode(WrapMode.TileFlipXY); // 縁が半透明ににじまないようにする
+                g.DrawImage(image, new Rectangle(0, 0, fitted.Width, fitted.Height), 0, 0, image.Width, image.Height, GraphicsUnit.Pixel, wrap);
+            }
+            image.Dispose();
+            image = fitted;
+        }
         return image;
     }
 

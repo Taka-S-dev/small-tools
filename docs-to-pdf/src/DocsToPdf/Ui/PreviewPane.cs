@@ -121,6 +121,8 @@ internal sealed class PageStrip : ScrollableControl
     private bool _cutting;
     /// <summary>新しいファイルが始まるページ → 何番目のファイルか（1 始まり）。区切りの印を描くのに使う。</summary>
     private IReadOnlyDictionary<int, int> _starts = new Dictionary<int, int>();
+    /// <summary>選択モードで選ばれているページ。null なら選択モードではない（ページを選んで保存する画面で使う）。</summary>
+    private IReadOnlySet<int>? _selected;
     private int _hover = -1;
     private Spot _hoverSpot;
     private int _menuPage = -1;
@@ -165,6 +167,16 @@ internal sealed class PageStrip : ScrollableControl
     {
         _cutting = cutting;
         _starts = starts;
+        Invalidate();
+    }
+
+    /// <summary>
+    /// 選択モードを切り替える。選択モードでは、ページを押すと PageClicked を知らせ（選ぶ・外すは呼び出し側が決める）、
+    /// 選ばれたページに枠とチェックの印を付ける。null で選択モードをやめる。
+    /// </summary>
+    public void SetSelection(IReadOnlySet<int>? selected)
+    {
+        _selected = selected;
         Invalidate();
     }
 
@@ -390,7 +402,7 @@ internal sealed class PageStrip : ScrollableControl
 
             if (i == _hover)
             {
-                if (_interactive) g.DrawRectangle(hoverBorder, rect);
+                if (_interactive || _selected is not null) g.DrawRectangle(hoverBorder, rect);
                 else g.DrawRectangle(border, rect.X, rect.Y, rect.Width - 1, rect.Height - 1);
                 var (zoom, rotate) = ButtonsOf(rect);
                 DrawButton(g, zoom, PageGlyphs.Zoom, _hoverSpot == Spot.Zoom);
@@ -401,6 +413,10 @@ internal sealed class PageStrip : ScrollableControl
             {
                 g.DrawRectangle(border, rect.X, rect.Y, rect.Width - 1, rect.Height - 1);
             }
+
+            // 選択モードで選ばれたページは、太い枠と左上のチェックの印で見せる
+            bool picked = _selected?.Contains(i) == true;
+            if (picked) DrawPicked(g, rect);
 
             // 新しいファイルが始まるページは、左に縦線を引き、下に「ここから N つ目」と出す
             bool starts = _starts.TryGetValue(i, out int fileNumber);
@@ -414,10 +430,32 @@ internal sealed class PageStrip : ScrollableControl
             var label = new Rectangle(rect.X, rect.Bottom, rect.Width, LabelHeight);
             int turn = TurnOf(i);
             string number = PageLabel?.Invoke(i) ?? $"{i + 1}";
-            string text = number + (starts ? $"・ここから {fileNumber} つ目" : "") + (turn != 0 ? $"・{turn}° 回転" : "") + (included ? "" : "（結合しない）");
-            TextRenderer.DrawText(g, text, Font, label, !included ? Theme.Danger : starts ? Theme.Link : ForeColor,
+            string text = number + (picked ? "・選択" : "") + (starts ? $"・ここから {fileNumber} つ目" : "") + (turn != 0 ? $"・{turn}° 回転" : "") + (included ? "" : "（結合しない）");
+            TextRenderer.DrawText(g, text, Font, label, !included ? Theme.Danger : starts || picked ? Theme.Link : ForeColor,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
         }
+    }
+
+    /// <summary>選ばれたページの印: ページを囲む太い枠と、左上の丸いチェック。</summary>
+    private void DrawPicked(Graphics g, Rectangle page)
+    {
+        int thick = LogicalToDeviceUnits(3);
+        using var frame = new Pen(SystemColors.Highlight, thick);
+        g.DrawRectangle(frame, Rectangle.Inflate(page, thick / 2 + 1, thick / 2 + 1));
+
+        int size = Math.Min(ButtonSize, Math.Max(12, page.Width / 4));
+        var badge = new Rectangle(page.Left + LogicalToDeviceUnits(4), page.Top + LogicalToDeviceUnits(4), size, size);
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        using (var fill = new SolidBrush(SystemColors.Highlight)) g.FillEllipse(fill, badge);
+        using (var tick = new Pen(SystemColors.HighlightText, Math.Max(2, size / 8)))
+        {
+            g.DrawLines(tick, [
+                new Point(badge.Left + size * 27 / 100, badge.Top + size * 52 / 100),
+                new Point(badge.Left + size * 43 / 100, badge.Top + size * 68 / 100),
+                new Point(badge.Left + size * 73 / 100, badge.Top + size * 35 / 100),
+            ]);
+        }
+        g.SmoothingMode = SmoothingMode.Default;
     }
 
     /// <summary>文字のボタン（「ここから分ける」など）。記号のボタンと同じ見た目で、文字だけ通常のフォントで描く。</summary>
@@ -557,7 +595,7 @@ internal sealed class PageStrip : ScrollableControl
     private void UpdateHover(Point point)
     {
         var (page, spot) = HitTest(point);
-        Cursor = spot is Spot.Zoom or Spot.Rotate or Spot.Cut || (spot == Spot.Page && _interactive) ? Cursors.Hand : Cursors.Default;
+        Cursor = spot is Spot.Zoom or Spot.Rotate or Spot.Cut || (spot == Spot.Page && (_interactive || _selected is not null)) ? Cursors.Hand : Cursors.Default;
         if (page == _hover && spot == _hoverSpot) return;
         _hover = page;
         _hoverSpot = spot;
@@ -601,7 +639,7 @@ internal sealed class PageStrip : ScrollableControl
             case Spot.Rotate:
                 PageRotateRequested?.Invoke(page, 90);
                 break;
-            case Spot.Page when _interactive:
+            case Spot.Page when _interactive || _selected is not null:
                 PageClicked?.Invoke(page);
                 break;
             case Spot.Cut:
@@ -679,6 +717,7 @@ internal sealed class PreviewPane : UserControl
     public event Action<FileEntry, int, int>? PageRotateRequested;
     public event Action<FileEntry>? ChooseSheetsRequested;
     public event Action<FileEntry>? SplitRequested;
+    public event Action<FileEntry>? ExtractRequested;
     public event Action<FileEntry>? PasswordRequested;
     public event Action<FileEntry>? RetryRequested;
     public event Action<FileEntry>? UseAllPagesRequested;
@@ -750,6 +789,7 @@ internal sealed class PreviewPane : UserControl
                 _strip.ShowDocument(pdf, entry.SelectedPages, entry.Rotations, interactive: !locked, hint);
                 if (!locked)
                 {
+                    AddAction("ページを選んで保存...", () => ExtractRequested?.Invoke(entry));
                     AddAction("分割...", () => SplitRequested?.Invoke(entry));
                     if (entry.Kind == FileKind.Excel && pdf.Sheets is not null)
                         AddAction("シートと幅の設定...", () => ChooseSheetsRequested?.Invoke(entry));

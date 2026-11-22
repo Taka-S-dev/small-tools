@@ -226,8 +226,9 @@ internal sealed partial class MainForm : Form
         var sheets = new ToolStripMenuItem("シートと幅の設定...", null, (_, _) => ChooseSheetsForSelected());
         var password = new ToolStripMenuItem("パスワードを入力...", null, (_, _) => AskPasswordForSelected());
         var retry = new ToolStripMenuItem("もう一度変換", null, (_, _) => RetrySelected());
+        var extract = new ToolStripMenuItem("ページを選んで保存...", null, (_, _) => ExtractSelected());
         var split = new ToolStripMenuItem("分割...", null, (_, _) => SplitSelected());
-        menu.Items.AddRange([rename, range, sheets, password, retry, split]);
+        menu.Items.AddRange([rename, range, sheets, password, retry, extract, split]);
         menu.Items.Add(new ToolStripSeparator());
         var remove = new ToolStripMenuItem("削除", null, (_, _) => RemoveSelected()) { ShortcutKeyDisplayString = "Delete" };
         menu.Items.Add(remove);
@@ -251,6 +252,7 @@ internal sealed partial class MainForm : Form
             password.Enabled = idle;
             retry.Enabled = idle && selected.Any(s => !s.IsBusy);
             split.Enabled = idle && single is { IsUsable: true };
+            extract.Enabled = idle && single?.Converted is not null;
             remove.Enabled = idle;
         };
         return menu;
@@ -295,6 +297,7 @@ internal sealed partial class MainForm : Form
         _preview.PageRotateRequested += RotatePage;
         _preview.ChooseSheetsRequested += ChooseSheets;
         _preview.SplitRequested += Split;
+        _preview.ExtractRequested += ExtractPages;
         _preview.PasswordRequested += AskPassword;
         _preview.RetryRequested += entry => Retry([entry]);
         _preview.UseAllPagesRequested += entry => SetPageRange(entry, "");

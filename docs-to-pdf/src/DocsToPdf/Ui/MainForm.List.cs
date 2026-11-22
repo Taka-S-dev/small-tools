@@ -646,6 +646,21 @@ internal sealed partial class MainForm
         viewer.ShowDialog(this);
     }
 
+    private void ExtractSelected()
+    {
+        if (SelectedEntries().Take(2).ToList() is [var entry]) ExtractPages(entry);
+    }
+
+    /// <summary>1 ファイルから選んだページだけを 1 つの PDF に保存する。結合の一覧そのものは変えない。</summary>
+    private void ExtractPages(FileEntry entry)
+    {
+        if (_busy || entry.Converted is null) return;
+        using var dialog = new PageSelectDialog(entry);
+        if (dialog.ShowDialog(this) != DialogResult.OK || dialog.Written is not { } written) return;
+        SetCreatedStatus(written, 1, dialog.WrittenPages);
+        if (_optOpen.Checked) ShellOpen(written);
+    }
+
     private void SplitSelected()
     {
         if (SelectedEntries().Take(2).ToList() is [var entry]) Split(entry);

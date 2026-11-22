@@ -19,7 +19,6 @@ internal sealed partial class MainForm
         if (output is null) return false;
         ShowProgress(true);
 
-        // まだ終わっていない変換を待つ
         await WaitForConversionsAsync(entries, ct);
 
         var usable = entries.Where(e => e.IsUsable).ToList();
@@ -45,7 +44,6 @@ internal sealed partial class MainForm
             }
         }
 
-        // 結合して保存する
         SetStatus("PDF を結合しています...");
         var parts = usable.Select(PartOf).ToList();
         var options = CurrentOptions(Path.GetFileNameWithoutExtension(output));

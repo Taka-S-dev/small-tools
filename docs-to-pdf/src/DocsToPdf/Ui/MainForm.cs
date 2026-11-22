@@ -12,7 +12,8 @@ internal sealed partial class MainForm : Form
 {
     public const string AppTitle = "Docs to PDF";
 
-    private const int ColName = 0, ColTitle = 1, ColPages = 2, ColRange = 3, ColState = 4;
+    // 結合の順の番号（ColOrder）は表示では先頭に出すが、アイコンをファイル名の横に残すため、項目としては最後の列に置く
+    private const int ColName = 0, ColTitle = 1, ColPages = 2, ColRange = 3, ColState = 4, ColOrder = 5;
 
     private readonly AppSettings _settings = AppSettings.Load();
     private readonly StartupOptions _startup;
@@ -37,6 +38,7 @@ internal sealed partial class MainForm : Form
     private readonly ColumnHeader _colPages = new() { Text = "ページ", TextAlign = HorizontalAlignment.Right };
     private readonly ColumnHeader _colRange = new() { Text = "ページ指定" };
     private readonly ColumnHeader _colState = new() { Text = "状態" };
+    private readonly ColumnHeader _colOrder = new() { Text = "順", TextAlign = HorizontalAlignment.Right };
     private readonly ImageList _icons = new() { ColorDepth = ColorDepth.Depth32Bit };
 
     private readonly Label _emptyHint = new()
@@ -138,7 +140,8 @@ internal sealed partial class MainForm : Form
         // 一覧
         _icons.ImageSize = SystemInformation.SmallIconSize;
         _list.SmallImageList = _icons;
-        _list.Columns.AddRange([_colName, _colTitle, _colPages, _colRange, _colState]);
+        _list.Columns.AddRange([_colName, _colTitle, _colPages, _colRange, _colState, _colOrder]);
+        _colOrder.DisplayIndex = 0;
         _list.Controls.Add(_emptyHint);
         _list.Controls.Add(_insertMark);
         _list.ContextMenuStrip = BuildContextMenu();
@@ -372,16 +375,18 @@ internal sealed partial class MainForm : Form
         // 縦のスクロールバーがまだなくても、行が増えて出たときに横へはみ出さないよう、その分を空けておく
         if (!ListHasVerticalScrollBar()) width -= SystemInformation.VerticalScrollBarWidth;
 
+        int order = LogicalToDeviceUnits(_list.Items.Count >= 100 ? 40 : 32);
         int pages = LogicalToDeviceUnits(58), range = LogicalToDeviceUnits(84);
-        int fixedWidth = pages + range;
+        int fixedWidth = order + pages + range;
         if (width < fixedWidth * 2)
         {
             pages = width * 58 / 142 / 2;
             range = width * 84 / 142 / 2;
-            fixedWidth = pages + range;
+            fixedWidth = order + pages + range;
         }
         int flexible = Math.Max(0, width - fixedWidth);
         _list.BeginUpdate();
+        _colOrder.Width = order;
         _colPages.Width = pages;
         _colRange.Width = range;
         // 一番大事なファイル名に多く配る。状態は「OK」で済むことが多く、長い理由は行のツールチップで全文が見られる

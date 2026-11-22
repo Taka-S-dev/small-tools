@@ -212,7 +212,7 @@ internal sealed partial class MainForm
             using var icon = ShellIcons.ForExtension(extension);
             if (icon is not null) _icons.Images.Add(extension, icon);
         }
-        return new ListViewItem(["", "", "", "", ""]) { Tag = entry, ImageKey = extension };
+        return new ListViewItem(["", "", "", "", "", ""]) { Tag = entry, ImageKey = extension };
     }
 
     /// <summary>その行の変換を頼む（頼み直す）。前の依頼の結果は捨てる。</summary>
@@ -933,6 +933,8 @@ internal sealed partial class MainForm
         SetText(item, ColPages, entry.Converted is null ? "" : used == total ? $"{total}" : $"{used}/{total}");
         SetText(item, ColRange, entry.PageRange);
         SetText(item, ColState, StateText(entry));
+        // 上から順に結合する。並べ替えや削除のあとは RefreshAll で付け直す
+        SetText(item, ColOrder, item.Index >= 0 ? $"{item.Index + 1}" : "");
 
         bool problem = entry.State is EntryState.Failed or EntryState.NeedsPassword
             || (entry.State == EntryState.Ready && used == 0);

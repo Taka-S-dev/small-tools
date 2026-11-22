@@ -9,6 +9,9 @@ public class PageRangeTests
     [InlineData(" 1 - 3 , 5 ", "1-3,5")]
     [InlineData("8〜", "8-")]
     [InlineData(",2,", "2")]
+    [InlineData("1-3 10-12", "1-3,10-12")]
+    [InlineData("１－３　１０－１２", "1-3,10-12")]
+    [InlineData("2 5 8-", "2,5,8-")]
     [InlineData(null, "")]
     [InlineData("   ", "")]
     public void Normalize_converts_full_width_and_removes_spaces(string? input, string expected) =>

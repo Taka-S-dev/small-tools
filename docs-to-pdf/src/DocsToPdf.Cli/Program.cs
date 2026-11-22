@@ -8,7 +8,7 @@ namespace DocsToPdf.Cli;
 internal static class ExitCodes
 {
     public const int Success = 0;
-    /// <summary>変換・結合・分割に失敗した（ファイルごとに PDF にするときは、1 件でも失敗した）、または上書きを断った。</summary>
+    /// <summary>変換・結合・分割・抜き出しに失敗した（ファイルごとに PDF にするときは、1 件でも失敗した）、または上書きを断った。</summary>
     public const int Failure = 1;
     /// <summary>指定が正しくない（ファイルが見つからない、オプションの組み合わせが違うなど）。</summary>
     public const int Usage = 2;
@@ -37,6 +37,7 @@ internal static class Program
         var root = BuildRoot();
         root.Subcommands.Add(BuildMerge());
         root.Subcommands.Add(BuildSplit());
+        root.Subcommands.Add(BuildExtract());
 
         // ライブラリが用意する --help / --version の説明を、ほかと同じ日本語にそろえる
         foreach (var option in root.Options)
@@ -107,7 +108,7 @@ internal static class Program
 
     /// <summary>
     /// サブコマンドなし: ファイルごとに PDF にする（docs2pdf 報告.docx → 報告.pdf）。
-    /// 結合は merge、分割は split。
+    /// 結合は merge、分割は split、ページの抜き出しは extract。
     /// </summary>
     private static RootCommand BuildRoot()
     {
@@ -121,7 +122,7 @@ internal static class Program
 
         var root = new RootCommand(
             "Word・Excel・PowerPoint・画像を、ファイルごとに PDF にする（同じ名前の .pdf を隣に作る）。\n" +
-            "1 つにまとめるときは merge、PDF を分けるときは split を使う。")
+            "1 つにまとめるときは merge、PDF を分けるときは split、ページを抜き出すときは extract を使う。")
         {
             inputs, output, numbers, Force, Timeout, Quiet,
         };
@@ -337,6 +338,88 @@ internal static class Program
             await Task.Run(() => PdfSplitter.Split(pdf.PdfPath, pdf.Outline, baseName, pieces, paths, ct: ct), ct);
             foreach (var path in paths) log.Result(path);
             log.Progress($"分割しました（全 {pdf.PageCount} ページ → {pieces.Count} ファイル）");
+            return ExitCodes.Success;
+        });
+    }
+
+    private static Command BuildExtract()
+    {
+        var input = new Argument<string>("入力") { Description = "ページを抜き出すファイル（PDF のほか、Word・Excel・PowerPoint・画像も PDF にしてから抜き出す）" };
+        var pages = new Option<string[]>("--pages")
+        {
+            Description = "抜き出すページ。空白かカンマで区切って並べる（例: --pages 1-3 10-12）。書いた順ではなく、元のページの順に並べる",
+            HelpName = "範囲",
+            Required = true,
+            Arity = ArgumentArity.OneOrMore,
+            AllowMultipleArgumentsPerToken = true,
+        };
+        var output = new Option<string?>("--out", "-o")
+        {
+            Description = "作る PDF のパス（既定は入力と同じフォルダの「元の名前_1-3,10-12.pdf」）",
+            HelpName = "出力.pdf",
+        };
+        var numbers = new Option<bool>("--page-numbers") { Description = "各ページの下に「3 / 25」の形で、抜き出した中での番号を入れる" };
+        var open = new Option<bool>("--open") { Description = "作ったあと、既定のアプリで開く" };
+
+        var command = new Command("extract", "選んだページだけを 1 つの PDF にする（1-3 と 10-12 だけ印刷したいときなど）")
+        {
+            input, pages, output, numbers, open, Force, Timeout, Quiet,
+        };
+        command.SetAction((result, ct) => ExtractAsync(
+            result.GetValue(input)!, result.GetValue(pages) ?? [], result.GetValue(output), result.GetValue(numbers),
+            result.GetValue(open), result.GetValue(Force), result.GetValue(Timeout), new Log(result.GetValue(Quiet)), ct));
+        return command;
+    }
+
+    private static async Task<int> ExtractAsync(string input, string[] ranges, string? output, bool pageNumbers, bool open,
+        bool force, int timeoutMinutes, Log log, CancellationToken ct)
+    {
+        string range = string.Join(",", ranges.Select(PageRange.Normalize).Where(r => r.Length > 0));
+        if (range.Length == 0 || !PageRange.IsValid(range))
+        {
+            log.Error($"ページ指定「{string.Join(" ", ranges)}」を読めません。「1-3 10-12」「5,8-」のように書いてください。");
+            return ExitCodes.Usage;
+        }
+
+        string source = Path.GetFullPath(input);
+        if (!File.Exists(source) || !FileEntry.TryGetKind(source, out _))
+        {
+            log.Error($"見つからないか、扱えない形式です: {input}");
+            return ExitCodes.Usage;
+        }
+        string stem = Path.GetFileNameWithoutExtension(source);
+
+        return await RunAsync(log, timeoutMinutes, async session =>
+        {
+            var converted = await session.ConvertAllAsync([source], ct);
+            if (converted is null) return ExitCodes.Failure;
+            var pdf = converted[0];
+
+            var pages = PageRange.Resolve(range, pdf.PageCount);
+            if (pages.Count == 0)
+            {
+                log.Error($"ページ指定「{range}」に当てはまるページがありません（全 {pdf.PageCount} ページ）。");
+                return ExitCodes.Usage;
+            }
+
+            // 名前は画面の「ページを選んで保存」と同じ（元の名前_1-3,10-12.pdf）
+            string label = PageRange.Format(pages, pdf.PageCount) is { Length: > 0 } l ? l : "全ページ";
+            string target = Path.GetFullPath(output
+                ?? Path.Combine(Path.GetDirectoryName(source)!, PdfSplitter.SafeFileName($"{stem}_{label}") + ".pdf"));
+            if (string.Equals(target, source, StringComparison.OrdinalIgnoreCase))
+            {
+                log.Error($"出力先が入力のファイルと同じです: {target}");
+                return ExitCodes.Usage;
+            }
+            if (!CanWrite([target], force, log)) return ExitCodes.Failure;
+
+            log.Progress($"{pages.Count} ページを抜き出しています...");
+            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+            var part = new MergePart(pdf.PdfPath, stem, pages, pdf.Outline);
+            int written = await Task.Run(() => IndividualPdf.Write(part, target, pageNumbers, ct), ct);
+            log.Progress($"作成しました（全 {pdf.PageCount} ページから {written} ページ）");
+            log.Result(target);
+            if (open) ShellOpen(target, log);
             return ExitCodes.Success;
         });
     }

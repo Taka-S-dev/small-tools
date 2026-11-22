@@ -8,11 +8,15 @@ namespace DocsToPdf.Core;
 /// </summary>
 internal static class PageRange
 {
-    /// <summary>全角の数字や記号、空白を取り除いて、半角の書き方にそろえる。</summary>
+    /// <summary>
+    /// 全角の数字や記号を半角に直し、空白を取り除いて、半角の書き方にそろえる。
+    /// 数字と数字の間の空白は区切りとして扱う（「1-3 10-12」は「1-3,10-12」）。
+    /// </summary>
     public static string Normalize(string? text)
     {
         if (string.IsNullOrWhiteSpace(text)) return "";
         var sb = new StringBuilder(text.Length);
+        bool spaced = false;
         foreach (char ch in text)
         {
             char c = ch switch
@@ -22,7 +26,14 @@ internal static class PageRange
                 '－' or '‐' or '–' or '—' or '―' or 'ー' or '〜' or '～' or '~' => '-',
                 _ => ch,
             };
-            if (!char.IsWhiteSpace(c)) sb.Append(c);
+            if (char.IsWhiteSpace(c))
+            {
+                spaced = sb.Length > 0;
+                continue;
+            }
+            if (spaced && char.IsAsciiDigit(c) && char.IsAsciiDigit(sb[^1])) sb.Append(',');
+            spaced = false;
+            sb.Append(c);
         }
         return sb.ToString().Trim(',');
     }

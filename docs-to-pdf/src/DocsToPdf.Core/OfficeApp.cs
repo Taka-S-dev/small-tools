@@ -39,6 +39,48 @@ internal abstract class OfficeApp : IDisposable
     public string DisplayName { get; }
 
     protected abstract void Configure(dynamic app);
+
+    /// <summary>
+    /// 利用者の Office を借りているとき、変換の間だけ設定を変える（マクロを実行しない、確認を出さない）。
+    /// 元に戻す処理を返す。変えられなかった設定があれば、変えた分を戻してから例外を投げる。
+    /// </summary>
+    protected abstract Action Borrow(dynamic app);
+
+    /// <summary>Borrow で変えた設定と、その戻し方。戻すときは変えたのと逆の順に戻す。</summary>
+    internal sealed class SettingChanges
+    {
+        private readonly List<Action> _undo = [];
+
+        public void Change<T>(Func<T> get, Action<T> set, T value)
+        {
+            T original = get();
+            set(value);
+            _undo.Add(() => set(original));
+        }
+
+        public void Undo()
+        {
+            for (int i = _undo.Count - 1; i >= 0; i--)
+            {
+                try { _undo[i](); } catch { /* Office が閉じられた。残りは戻せるだけ戻す */ }
+            }
+            _undo.Clear();
+        }
+
+        /// <summary>changes で設定を変え、戻す処理を返す。途中で失敗したら、変えた分を戻してから投げる。</summary>
+        public static Action Apply(Action<SettingChanges> changes)
+        {
+            var applied = new SettingChanges();
+            try { changes(applied); }
+            catch
+            {
+                applied.Undo();
+                throw;
+            }
+            return applied.Undo;
+        }
+    }
+
     protected abstract void QuitCore(dynamic app);
 
     /// <summary>このツールが開いたもの以外に、利用者の目に見える形で開いている文書の数。</summary>
@@ -103,7 +145,19 @@ internal abstract class OfficeApp : IDisposable
         {
             try
             {
-                result = action(_app!);
+                // 利用者の Office を借りているときは、マクロを無効にできなければ開かない。
+                // 戻すのは、下の catch で接続を捨てるより前（ここの finally）
+                Action? restore = null;
+                if (!_owned)
+                {
+                    try { restore = Borrow(_app!); }
+                    catch (Exception ex) when (!IsDisconnected(ex))
+                    {
+                        throw new InvalidOperationException($"{DisplayName} でマクロを無効にできないため、変換しませんでした。", ex);
+                    }
+                }
+                try { result = action(_app!); }
+                finally { restore?.Invoke(); }
             }
             catch (Exception) when (_killed)
             {
@@ -341,6 +395,12 @@ internal sealed class WordApp : OfficeApp
         app.AutomationSecurity = 3; // msoAutomationSecurityForceDisable: マクロを実行しない
     }
 
+    protected override Action Borrow(dynamic app) => SettingChanges.Apply(c =>
+    {
+        c.Change<int>(() => (int)app.DisplayAlerts, v => app.DisplayAlerts = v, 0);           // wdAlertsNone
+        c.Change<int>(() => (int)app.AutomationSecurity, v => app.AutomationSecurity = v, 3); // msoAutomationSecurityForceDisable
+    });
+
     /// <summary>文書を PDF にする。見出しはしおりになる。</summary>
     public void Export(string source, string pdf, string? password, TimeSpan timeout, CancellationToken ct) =>
         Run<object?>(app =>
@@ -451,6 +511,13 @@ internal sealed class ExcelApp : OfficeApp
         app.AskToUpdateLinks = false;
         app.AutomationSecurity = 3; // msoAutomationSecurityForceDisable
     }
+
+    protected override Action Borrow(dynamic app) => SettingChanges.Apply(c =>
+    {
+        c.Change<bool>(() => (bool)app.DisplayAlerts, v => app.DisplayAlerts = v, false);
+        c.Change<bool>(() => (bool)app.EnableEvents, v => app.EnableEvents = v, false);
+        c.Change<int>(() => (int)app.AutomationSecurity, v => app.AutomationSecurity = v, 3); // msoAutomationSecurityForceDisable
+    });
 
     protected override int? FindProcessId(dynamic app, HashSet<int> before)
     {
@@ -621,6 +688,12 @@ internal sealed class PowerPointApp : OfficeApp
         app.AutomationSecurity = 3; // msoAutomationSecurityForceDisable
     }
 
+    protected override Action Borrow(dynamic app) => SettingChanges.Apply(c =>
+    {
+        c.Change<int>(() => (int)app.DisplayAlerts, v => app.DisplayAlerts = v, 1);           // ppAlertsNone
+        c.Change<int>(() => (int)app.AutomationSecurity, v => app.AutomationSecurity = v, 3); // msoAutomationSecurityForceDisable
+    });
+
     // PowerPoint は 1 つしか起動しないので、利用者がすでに開いていれば、その PowerPoint につながる。
     // その場合は画面に出ているので「自分で起動したものではない」と判断し、終了も強制終了もしない。
     protected override bool LooksFresh(dynamic app) => (int)app.Visible == 0 && (int)app.Presentations.Count == 0;
@@ -629,20 +702,6 @@ internal sealed class PowerPointApp : OfficeApp
     public void Export(string source, string pdf, string? password, TimeSpan timeout, CancellationToken ct) =>
         Run<object?>(app =>
         {
-            // 利用者の PowerPoint を借りているときは、変換の間だけ設定を変え、終わったら元に戻す
-            int? alerts = null, security = null;
-            if (!Owned)
-            {
-                try
-                {
-                    alerts = (int)app.DisplayAlerts;
-                    security = (int)app.AutomationSecurity;
-                    app.DisplayAlerts = 1;      // ppAlertsNone
-                    app.AutomationSecurity = 3; // msoAutomationSecurityForceDisable
-                }
-                catch { /* 変えられなければ、そのままの設定で変換する */ }
-            }
-
             dynamic presentations = app.Presentations;
             dynamic? presentation = null;
             try
@@ -664,12 +723,6 @@ internal sealed class PowerPointApp : OfficeApp
                     Release(presentation);
                 }
                 Release(presentations);
-                try
-                {
-                    if (alerts is int a) app.DisplayAlerts = a;
-                    if (security is int b) app.AutomationSecurity = b;
-                }
-                catch { /* PowerPoint が閉じられた */ }
             }
             return null;
         }, timeout, ct);

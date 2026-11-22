@@ -83,7 +83,7 @@ internal sealed class SplitDialog : Form
         _byBookmarks.Text = _bookmarkFiles > 0 ? $"しおりごと（{_bookmarkFiles} ファイル）" : "しおりごと（しおりがありません）";
         _byBookmarks.Enabled = _bookmarkFiles > 0;
 
-        _pieceList.Columns.Add("できるファイル");
+        _pieceList.Columns.Add("書き出すファイル");
         _pieceList.Columns.Add("ページ");
         _pieceList.Columns.Add("枚数", -2, HorizontalAlignment.Right);
         _pieceList.Resize += (_, _) => FitColumns();
@@ -146,7 +146,7 @@ internal sealed class SplitDialog : Form
         (_every.Name, _every.AccessibleName) = ("Every", "何ページずつ分けるか");
         (_ranges.Name, _ranges.AccessibleName) = ("Ranges", "分ける範囲");
         (_folder.Name, _folder.AccessibleName) = ("Folder", "保存先");
-        (_pieceList.Name, _pieceList.AccessibleName) = ("Pieces", "できるファイル");
+        (_pieceList.Name, _pieceList.AccessibleName) = ("Pieces", "書き出すファイル");
 
         AcceptButton = _split;
         CancelButton = _cancel;

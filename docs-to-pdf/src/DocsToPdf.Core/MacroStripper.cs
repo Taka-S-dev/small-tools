@@ -10,6 +10,7 @@ namespace DocsToPdf.Core;
 /// マクロの本体そのものを Office に渡さないようにする。
 /// これらの形式は中身が zip なので、マクロの部品（vbaProject.bin と、その署名や付随データ）を除いた zip を書き出し、
 /// それらを指している登録（[Content_Types].xml と .rels）も消して、壊れたファイルに見えないようにする。
+/// 部品の名前は自由に付けられ、Office は名前ではなく登録の種類で部品をたどるので、名前と登録の両方で探す。
 /// 古い形式（.doc .xls .ppt）は構造が違うので対象外で、マクロを無効にする設定だけで守る。
 /// </summary>
 internal static class MacroStripper
@@ -33,7 +34,7 @@ internal static class MacroStripper
     public static int Strip(string source, string destination)
     {
         using var input = ZipFile.OpenRead(source);
-        var removed = input.Entries.Where(e => IsMacroPart(e.FullName)).Select(e => e.FullName).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var removed = FindMacroParts(input);
         if (removed.Count == 0)
         {
             input.Dispose();
@@ -56,7 +57,7 @@ internal static class MacroStripper
                     using var from = entry.Open();
                     if (entry.FullName.Equals("[Content_Types].xml", StringComparison.OrdinalIgnoreCase))
                         WithoutContentTypes(from, removed).Save(to, SaveOptions.DisableFormatting);
-                    else if (entry.FullName.EndsWith(".rels", StringComparison.OrdinalIgnoreCase))
+                    else if (IsRelationshipsPart(entry.FullName))
                         WithoutRelationships(from, entry.FullName, removed).Save(to, SaveOptions.DisableFormatting);
                     else
                         from.CopyTo(to);
@@ -71,14 +72,81 @@ internal static class MacroStripper
         }
     }
 
-    /// <summary>マクロの本体、その署名、マクロが使うデータの部品か。</summary>
-    private static bool IsMacroPart(string fullName)
+    /// <summary>
+    /// マクロの本体、その署名、マクロが使うデータの部品を探す。次のどれかに当たれば対象にする:
+    /// 決まった名前である / [Content_Types].xml でマクロの種類に登録されている / .rels でマクロとして指されている。
+    /// </summary>
+    private static HashSet<string> FindMacroParts(ZipArchive zip)
+    {
+        var entries = zip.Entries.Select(e => e.FullName).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var found = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        found.UnionWith(entries.Where(HasMacroName));
+
+        if (zip.GetEntry("[Content_Types].xml") is { } types)
+        {
+            XElement? root;
+            using (var stream = types.Open()) root = XDocument.Load(stream).Root;
+            var overridden = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var item in root?.Elements(ContentTypes + "Override") ?? [])
+            {
+                if ((string?)item.Attribute("PartName") is not { } part) continue;
+                overridden.Add(part.TrimStart('/'));
+                if (IsMacroContentType((string?)item.Attribute("ContentType"))) found.Add(part.TrimStart('/'));
+            }
+            // 拡張子ごとの既定の種類は、名前ごとの登録を持たない部品にだけ効く
+            var macroExtensions = (root?.Elements(ContentTypes + "Default") ?? [])
+                .Where(d => IsMacroContentType((string?)d.Attribute("ContentType")))
+                .Select(d => "." + (string?)d.Attribute("Extension"))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            found.UnionWith(entries.Where(e => !overridden.Contains(e) && macroExtensions.Contains(Path.GetExtension(e))));
+        }
+
+        foreach (var rels in zip.Entries.Where(e => IsRelationshipsPart(e.FullName)))
+        {
+            XElement? root;
+            using (var stream = rels.Open()) root = XDocument.Load(stream).Root;
+            string baseDir = BaseDirectoryOf(rels.FullName);
+            foreach (var r in root?.Elements(Relationships + "Relationship") ?? [])
+            {
+                if ((string?)r.Attribute("TargetMode") == "External" || (string?)r.Attribute("Target") is not { } target) continue;
+                if (IsMacroRelationship((string?)r.Attribute("Type"))) found.Add(Resolve(baseDir, target));
+            }
+        }
+
+        found.IntersectWith(entries);
+        return found;
+    }
+
+    /// <summary>
+    /// 関係の登録（.rels）か。Office が読むのは _rels フォルダの中のものだけで、
+    /// それ以外の場所にある .rels という名前の部品は、ただのデータとしてそのまま写す。
+    /// </summary>
+    private static bool IsRelationshipsPart(string fullName) =>
+        fullName.EndsWith(".rels", StringComparison.OrdinalIgnoreCase)
+        && (Path.GetDirectoryName(fullName)?.Replace('\\', '/') ?? "").Split('/')[^1].Equals("_rels", StringComparison.OrdinalIgnoreCase);
+
+    private static bool HasMacroName(string fullName)
     {
         string name = Path.GetFileName(fullName);
         return name.Equals("vbaProject.bin", StringComparison.OrdinalIgnoreCase)
             || name.Equals("vbaData.xml", StringComparison.OrdinalIgnoreCase)
             || name.StartsWith("vbaProjectSignature", StringComparison.OrdinalIgnoreCase);
     }
+
+    /// <summary>application/vnd.ms-office.vbaProject、vbaProjectSignature…、vnd.ms-word.vbaData+xml など。</summary>
+    private static bool IsMacroContentType(string? type) => type is not null
+        && (type.Contains("vbaProject", StringComparison.OrdinalIgnoreCase) || type.Contains("vbaData", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>…/relationships/vbaProject、vbaProjectSignature…、wordVbaData など。</summary>
+    private static bool IsMacroRelationship(string? type)
+    {
+        if (type is null) return false;
+        string last = type[(type.LastIndexOf('/') + 1)..];
+        return last.StartsWith("vbaProject", StringComparison.OrdinalIgnoreCase) || last.EndsWith("VbaData", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string BaseDirectoryOf(string relsName) =>
+        (SourceOfRelationships(relsName) is { } source ? Path.GetDirectoryName(source)?.Replace('\\', '/') : "") ?? "";
 
     /// <summary>取り除いた部品自身の .rels（word/_rels/vbaProject.bin.rels など）か。</summary>
     private static bool IsRelationshipsOf(string fullName, HashSet<string> removed)
@@ -110,7 +178,7 @@ internal static class MacroStripper
     private static XDocument WithoutRelationships(Stream stream, string relsName, HashSet<string> removed)
     {
         var doc = XDocument.Load(stream);
-        string baseDir = (SourceOfRelationships(relsName) is { } source ? Path.GetDirectoryName(source)?.Replace('\\', '/') : "") ?? "";
+        string baseDir = BaseDirectoryOf(relsName);
         doc.Root?.Elements(Relationships + "Relationship")
             .Where(r => (string?)r.Attribute("TargetMode") != "External"
                         && (string?)r.Attribute("Target") is { } target

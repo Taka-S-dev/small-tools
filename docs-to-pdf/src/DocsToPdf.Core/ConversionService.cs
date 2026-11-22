@@ -300,7 +300,8 @@ internal sealed class ConversionService : IDisposable
     /// 元のファイルを Office に触らせずに済む。
     ///
     /// マクロ付きの形式（.docm .xlsm .pptm など）は、マクロを取り除いた写しにする（MacroStripper）。
-    /// 取り除けない（暗号化されている、壊れている）ときはそのまま写す。その場合も Office はマクロを強制的に無効にして開く。
+    /// 暗号化されたファイルは zip ではないので取り除けず、そのまま写す。その場合も Office はマクロを強制的に無効にして開く。
+    /// zip なのに中身が読めないときは、取り除けないまま開くことになるので変換しない。
     ///
     /// インターネットから来たファイルの印（Zone.Identifier）は写しにも残す。消すと安全側の判断を弱めることになり、
     /// 印が付いたままでも、確かめた環境では自動操作で変換できた（Word・Excel・PowerPoint）。
@@ -318,7 +319,9 @@ internal sealed class ConversionService : IDisposable
             }
             catch (Exception ex) when (ex is InvalidDataException or System.Xml.XmlException or IOException)
             {
-                // zip として読めない形式（暗号化など）。下でそのまま写す
+                if (!IsOleCompound(path))
+                    throw new InvalidOperationException("ファイルの中身が読めず、マクロを取り除けないため、変換しませんでした。", ex);
+                // 暗号化されたファイル。下でそのまま写す
             }
         }
         if (!stripped) File.Copy(path, copy, overwrite: true);
@@ -347,20 +350,23 @@ internal sealed class ConversionService : IDisposable
         if (passwordGiven) return false;
 
         string ext = Path.GetExtension(file).ToLowerInvariant();
-        if (ext is ".docx" or ".docm" or ".xlsx" or ".xlsm" or ".xlsb" or ".pptx" or ".pptm" or ".ppsx")
+        return ext is ".docx" or ".docm" or ".xlsx" or ".xlsm" or ".xlsb" or ".pptx" or ".pptm" or ".ppsx"
+            && IsOleCompound(file);
+    }
+
+    /// <summary>OLE 複合ファイル（先頭が D0 CF 11 E0）か。暗号化された docx / xlsx / pptx はこの形になる。</summary>
+    internal static bool IsOleCompound(string file)
+    {
+        try
         {
-            try
-            {
-                Span<byte> head = stackalloc byte[4];
-                using var stream = File.OpenRead(file);
-                return stream.Read(head) == 4 && head.SequenceEqual<byte>([0xD0, 0xCF, 0x11, 0xE0]);
-            }
-            catch
-            {
-                return false;
-            }
+            Span<byte> head = stackalloc byte[4];
+            using var stream = File.OpenRead(file);
+            return stream.Read(head) == 4 && head.SequenceEqual<byte>([0xD0, 0xCF, 0x11, 0xE0]);
         }
-        return false;
+        catch
+        {
+            return false;
+        }
     }
 
     private static string Describe(Exception ex)

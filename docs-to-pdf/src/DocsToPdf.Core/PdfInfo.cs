@@ -8,6 +8,7 @@ namespace DocsToPdf.Core;
 internal static class PdfInfo
 {
     private const int MaxOutlineNodes = 20_000;
+    private const int MaxNameTreeNodes = 100_000;
 
     public static (IReadOnlyList<PageSize> Sizes, IReadOnlyList<OutlineNode> Outline) Read(string path)
     {
@@ -150,13 +151,17 @@ internal static class PdfInfo
 
             // PDF 1.2 以降の書き方: /Names の下の名前ツリー
             var tree = catalog.Elements.GetDictionary("/Names")?.Elements.GetDictionary("/Dests");
-            if (tree is not null) WalkNameTree(tree, result, depth: 0);
+            if (tree is not null) WalkNameTree(tree, result, new HashSet<PdfDictionary>(ReferenceEqualityComparer.Instance), depth: 0);
             return result;
         }
 
-        private static void WalkNameTree(PdfDictionary node, Dictionary<string, PdfItem> result, int depth)
+        /// <summary>
+        /// 名前ツリーをたどる。1 つの節を複数の親から指す PDF もあるので、たどった節は二度たどらない
+        /// （たどり直すと、深さに対して指数的に時間がかかる）。
+        /// </summary>
+        private static void WalkNameTree(PdfDictionary node, Dictionary<string, PdfItem> result, HashSet<PdfDictionary> visited, int depth)
         {
-            if (depth > 32 || result.Count > 200_000) return;
+            if (depth > 32 || result.Count > 200_000 || visited.Count >= MaxNameTreeNodes || !visited.Add(node)) return;
 
             if (Deref(node.Elements["/Names"]) is PdfArray names)
             {
@@ -171,7 +176,7 @@ internal static class PdfInfo
                 foreach (var kid in kids.Elements)
                 {
                     if (Deref(kid) is PdfDictionary child)
-                        WalkNameTree(child, result, depth + 1);
+                        WalkNameTree(child, result, visited, depth + 1);
                 }
             }
         }

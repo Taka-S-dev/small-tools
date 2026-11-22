@@ -19,6 +19,34 @@ public sealed class PdfSplitterTests : IDisposable
         Assert.Equal(expected, PdfSplitter.RangesFromStarts(starts, pages));
 
     [Fact]
+    public void Sections_run_from_each_bookmark_to_the_next_one_at_the_same_or_upper_level()
+    {
+        // 第1章(1) ─ 1.1(2) ─ 1.2(4)、第2章(6)、付録(6)、全 8 ページ（括弧は 1 始まりのページ）
+        OutlineNode[] outline =
+        [
+            new("第1章", 0, [new("1.1", 1, []), new("1.2", 3, [])]),
+            new("第2章", 5, []),
+            new("付録", 5, []),
+        ];
+
+        var sections = PdfSplitter.Sections(outline, 8);
+
+        Assert.Equal(
+            [("第1章", 0, 0, 4), ("1.1", 1, 1, 2), ("1.2", 1, 3, 4), ("第2章", 0, 5, 5), ("付録", 0, 5, 7)],
+            sections.Select(s => (s.Title, s.Depth, s.First, s.Last)));
+    }
+
+    [Fact]
+    public void Sections_skip_bookmarks_that_point_outside_the_document()
+    {
+        OutlineNode[] outline = [new("表紙", 0, []), new("壊れたしおり", -1, []), new("本文", 2, [])];
+
+        var sections = PdfSplitter.Sections(outline, 4);
+
+        Assert.Equal([("表紙", 0, 1), ("本文", 2, 3)], sections.Select(s => (s.Title, s.First, s.Last)));
+    }
+
+    [Fact]
     public void Ranges_made_from_cut_points_split_where_the_cuts_are()
     {
         string text = PdfSplitter.RangesFromStarts([4, 7], 9);

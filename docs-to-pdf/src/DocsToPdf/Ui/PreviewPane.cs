@@ -89,9 +89,55 @@ internal static class PageGlyphs
 internal sealed class PageStrip : ScrollableControl
 {
     private const int MaxCachedPages = 48;
-    /// <summary>1 ページをこの幅（96dpi での値）より小さくしない範囲で、横に並べる。全体を見渡したい画面では小さくする。</summary>
+    private const int MinPageWidth = 70, MaxPageWidth = 480;
+    private int _targetPageWidth = 190;
+
+    /// <summary>
+    /// 1 ページをこの幅（96dpi での値）より小さくしない範囲で、横に並べる。全体を見渡したい画面では小さくする。
+    /// Ctrl を押しながらホイールを回しても変えられる（大きな PDF で、多くのページを一度に見渡すため）。
+    /// </summary>
     [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
-    public int TargetPageWidth { get; init; } = 190;
+    public int TargetPageWidth
+    {
+        get => _targetPageWidth;
+        set
+        {
+            value = Math.Clamp(value, MinPageWidth, MaxPageWidth);
+            if (value == _targetPageWidth) return;
+            // 一番上に見えていたページを、大きさを変えたあとも一番上に残す
+            int top = VisiblePages(0).DefaultIfEmpty(-1).First();
+            _targetPageWidth = value;
+            Relayout();
+            if (top >= 0) ScrollToPage(top);
+            else Invalidate();
+            _settle.Stop();
+            _settle.Start();
+        }
+    }
+
+    /// <summary>見えている範囲・全体の高さ・ページの並びが変わった（ミニマップを描き直すため）。</summary>
+    public event Action? ViewChanged;
+
+    /// <summary>PDF のページ数（並べていないページも含む）。</summary>
+    public int PageCount => _pages.Length;
+
+    /// <summary>並べたページ全体の高さ（ピクセル）。</summary>
+    public int ContentHeight => Math.Max(AutoScrollMinSize.Height, ClientSize.Height);
+
+    /// <summary>今見えている範囲の上端（全体の中での位置、ピクセル）。</summary>
+    public int ViewTop => -AutoScrollPosition.Y;
+
+    /// <summary>そのページが全体の中のどこに置かれているか（並べていなければ空）。</summary>
+    public Rectangle PageBoundsOf(int page) => page >= 0 && page < _pages.Length ? _pages[page] : Rectangle.Empty;
+
+    /// <summary>全体の中の位置 y が上に来るようにスクロールする。</summary>
+    public void ScrollToContent(int y)
+    {
+        AutoScrollPosition = new Point(0, Math.Clamp(y, 0, Math.Max(0, ContentHeight - ClientSize.Height)));
+        Invalidate();
+        EnsureRendered();
+        ViewChanged?.Invoke();
+    }
 
     private enum Spot { None, Page, Zoom, Rotate, Cut }
 
@@ -187,6 +233,7 @@ internal sealed class PageStrip : ScrollableControl
         AutoScrollPosition = new Point(0, Math.Max(0, _pages[page].Top - Margin12));
         Invalidate();
         EnsureRendered();
+        ViewChanged?.Invoke();
     }
 
     /// <summary>ページの代わりに、中央に文を出す。</summary>
@@ -284,6 +331,7 @@ internal sealed class PageStrip : ScrollableControl
         }
         _pages = pages;
         AutoScrollMinSize = new Size(0, y + Margin12 - Gap);
+        ViewChanged?.Invoke();
     }
 
     protected override void OnResize(EventArgs e)
@@ -300,6 +348,22 @@ internal sealed class PageStrip : ScrollableControl
         base.OnScroll(se);
         Invalidate();
         EnsureRendered();
+        ViewChanged?.Invoke();
+    }
+
+    protected override void WndProc(ref Message m)
+    {
+        const int WmMouseWheel = 0x020A, MkControl = 0x0008;
+        long wParam = m.WParam.ToInt64();
+        if (m.Msg == WmMouseWheel && (wParam & MkControl) != 0)
+        {
+            // Ctrl+ホイール: ページの大きさを 1 段ずつ変える（スクロールはしない）。
+            // Ctrl が押されていたかは、ホイールを回したときの状態（メッセージに入っている）で見る
+            int delta = (short)((wParam >> 16) & 0xFFFF);
+            TargetPageWidth = (int)Math.Round(TargetPageWidth * (delta > 0 ? 1.25 : 0.8));
+            return;
+        }
+        base.WndProc(ref m);
     }
 
     protected override void OnMouseWheel(MouseEventArgs e)
@@ -308,6 +372,7 @@ internal sealed class PageStrip : ScrollableControl
         Invalidate();
         UpdateHover(PointToClient(MousePosition));
         EnsureRendered();
+        ViewChanged?.Invoke();
     }
 
     private Rectangle OnScreen(Rectangle page) =>

@@ -42,6 +42,43 @@ internal static class PdfSplitter
         return pieces;
     }
 
+    /// <summary>しおり 1 件と、それが指す章のページ（0 始まり、First から Last まで）。Depth は階層（一番上が 0）。</summary>
+    public sealed record Section(string Title, int Depth, int First, int Last);
+
+    /// <summary>
+    /// しおりを入れ子のまま上から順に並べ、それぞれの章のページを求める。
+    /// 章は、そのしおりのページから、次に出てくる同じ階層か上の階層のしおりの手前まで（最後の章は最後のページまで）。
+    /// 次のしおりが同じページを指すときは、そのページだけを章にする。
+    /// </summary>
+    public static IReadOnlyList<Section> Sections(IReadOnlyList<OutlineNode> outline, int pageCount)
+    {
+        var flat = new List<(OutlineNode Node, int Depth)>();
+        void Walk(IReadOnlyList<OutlineNode> nodes, int depth)
+        {
+            foreach (var node in nodes)
+            {
+                if (node.PageIndex >= 0 && node.PageIndex < pageCount) flat.Add((node, depth));
+                Walk(node.Children, depth + 1);
+            }
+        }
+        Walk(outline, 0);
+
+        var sections = new List<Section>(flat.Count);
+        for (int i = 0; i < flat.Count; i++)
+        {
+            var (node, depth) = flat[i];
+            int last = pageCount - 1;
+            for (int j = i + 1; j < flat.Count; j++)
+            {
+                if (flat[j].Depth > depth) continue;
+                last = Math.Max(node.PageIndex, flat[j].Node.PageIndex - 1);
+                break;
+            }
+            sections.Add(new Section(node.Title, depth, node.PageIndex, last));
+        }
+        return sections;
+    }
+
     /// <summary>
     /// 区切り（新しいファイルが始まるページ、1 始まり）から、すべてのページを順に分ける範囲の書き方を作る。
     /// 先頭のページはいつも 1 つ目のファイルの始まり。例: 12 ページで 5 と 9 から区切る → "1-4; 5-8; 9-12"。

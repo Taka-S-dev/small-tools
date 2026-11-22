@@ -11,7 +11,7 @@ internal sealed class PdfPageRenderer
 {
     private string? _path;
     private PdfDocument? _document;
-    private InMemoryRandomAccessStream? _stream;
+    private IRandomAccessStream? _stream;
 
     /// <param name="displayWidth">回したあとの、表示する幅（ピクセル）。</param>
     /// <param name="turn">右へ回す角度（0 / 90 / 180 / 270）。</param>
@@ -19,12 +19,22 @@ internal sealed class PdfPageRenderer
     {
         if (_path != path || _document is null)
         {
-            // ファイルをつかんだままにしないよう、中身をメモリに読んでから開く
-            byte[] bytes = await File.ReadAllBytesAsync(path);
-            var stream = new InMemoryRandomAccessStream();
-            await stream.WriteAsync(bytes.AsBuffer());
-            stream.Seek(0);
-            var document = await PdfDocument.LoadFromStreamAsync(stream);
+            // ファイルを開いたまま、描くページに要る部分だけを読む（数百 MB の PDF でも丸ごとメモリに載せない）。
+            // 開いているのは作業フォルダの変換結果で、変換し直すと別の名前のファイルになるので、開いたままでも邪魔にならない。
+            // ほかのアプリで開く・消すのは妨げないよう、読み書きと削除の共有を許す
+            var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete,
+                bufferSize: 1 << 16, FileOptions.Asynchronous | FileOptions.RandomAccess);
+            IRandomAccessStream stream = file.AsRandomAccessStream();
+            PdfDocument document;
+            try
+            {
+                document = await PdfDocument.LoadFromStreamAsync(stream);
+            }
+            catch
+            {
+                stream.Dispose();
+                throw;
+            }
             _stream?.Dispose();
             (_path, _document, _stream) = (path, document, stream);
         }

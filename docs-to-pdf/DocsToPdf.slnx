@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/DocsToPdf/DocsToPdf.csproj" />
+    <Project Path="src/DocsToPdf.Core/DocsToPdf.Core.csproj" />
+    <Project Path="src/DocsToPdf.Cli/docs2pdf.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/DocsToPdf.Tests/DocsToPdf.Tests.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    変換・結合・分割の本体。画面（DocsToPdf）とコマンドライン（docs2pdf）の両方から使う。
+    Office の COM 操作と、画像の読み込み（System.Drawing）に Windows の機能を使う。
+  -->
+  <PropertyGroup>
+    <!-- Windows 10 の新しい API は使わない（使うのは画面版のプレビューだけ） -->
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <RootNamespace>DocsToPdf.Core</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- System.Drawing（画像を PDF にするところで使う）は Windows デスクトップの共有フレームワークに入っている -->
+    <FrameworkReference Include="Microsoft.WindowsDesktop.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 中の型は外へ公開する API ではないので internal のまま、使う側にだけ見せる -->
+    <InternalsVisibleTo Include="DocsToPdf" />
+    <InternalsVisibleTo Include="docs2pdf" />
+    <InternalsVisibleTo Include="DocsToPdf.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      PDFsharp は 6.5.0 から AGPL になり、実行時のライセンス検証も入った。
+      MIT ライセンスの最後の系列 6.2.x に固定する（勝手に上がらないよう [ ] で指定）。
+    -->
+    <PackageReference Include="PDFsharp" Version="[6.2.4]" />
+    <!-- PDFsharp 6.2.4 が引き込む 8.0.1 には既知の脆弱性があるため、修正済みの版で上書きする -->
+    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="11.0.0" />
+  </ItemGroup>
+
+</Project>

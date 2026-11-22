@@ -1,0 +1,67 @@
+# このツールのフォルダの許可リスト（リポジトリのルートの .gitignore と重ねて効く）
+# ここに挙げたものだけを追跡する（新しいファイルやフォルダを足すときは下に 1 行足す）
+/*
+!/.gitignore
+!/README.md
+!/Directory.Build.props
+!/DocsToPdf.slnx
+!/src/
+!/tests/
+
+# 許可の後ろで、どのフォルダの中でもビルドの成果物と機密を拒否し直す
+bin/
+obj/
+publish/
+TestResults/
+.vs/
+*.user
+.env
+.env.*
+*.pem
+*.key
+*.pfx
+*.snk
+id_rsa*
+id_ed25519*
+secrets.*
+credentials.*
+*.local.json
+*.log
+
+# 動作の確認に使った手元の文書（テストの入力はコードの中で作る）
+*.pdf
+*.doc
+*.docx
+*.docm
+*.rtf
+*.xls
+*.xlsx
+*.xlsm
+*.xlsb
+*.ppt
+*.pptx
+*.pptm
+*.pps
+*.ppsx
+# 画像はソースとテストの中だけ止める（README に載せる画面の画像は通す）
+/src/**/*.jpg
+/src/**/*.jpeg
+/src/**/*.png
+/src/**/*.bmp
+/src/**/*.gif
+/src/**/*.tif
+/src/**/*.tiff
+/tests/**/*.jpg
+/tests/**/*.jpeg
+/tests/**/*.png
+/tests/**/*.bmp
+/tests/**/*.gif
+/tests/**/*.tif
+/tests/**/*.tiff
+
+# AI ツールの設定やメモは、どのフォルダに置いても追跡しない
+.claude/
+CLAUDE.md
+CLAUDE.local.md
+AGENTS.md
+.cursor/

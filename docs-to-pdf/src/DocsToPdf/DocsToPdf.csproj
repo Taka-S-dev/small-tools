@@ -1,0 +1,21 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <!-- プレビューの描画に Windows の PDF 機能（Windows.Data.Pdf）を使うため、Windows 10 の API を参照する -->
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+    <ApplicationIcon>app.ico</ApplicationIcon>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <ApplicationVisualStyles>true</ApplicationVisualStyles>
+    <ApplicationDefaultFont>Yu Gothic UI, 9pt</ApplicationDefaultFont>
+    <Product>Docs to PDF</Product>
+    <Version>2.0.0</Version>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DocsToPdf.Core\DocsToPdf.Core.csproj" />
+  </ItemGroup>
+
+</Project>

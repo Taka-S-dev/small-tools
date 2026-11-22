@@ -7,6 +7,7 @@ namespace DocsToPdf.Ui;
 /// 分け方を変えるたびに、できあがるファイルの名前とページをその場で一覧に出す。
 /// プレビューで結合から外したページは含めず、回したページは回した向きで書き出す。
 /// ページの番号は、外したページを除いた「見えている順」で数える。
+/// 一覧で選んだファイルに入るページを、右側に並べて見せる（切れ目が思ったところにあるかを、書き出す前に確かめられるように）。
 /// </summary>
 internal sealed class SplitDialog : Form
 {
@@ -25,14 +26,20 @@ internal sealed class SplitDialog : Form
     private readonly RadioButton _byRanges = new() { Text = "範囲を指定", AutoSize = true };
     private readonly TextBox _ranges = new() { Dock = DockStyle.Fill, PlaceholderText = "例: 1-3; 4-8; 9-" };
     private readonly Label _rangesHint = new() { AutoSize = true, ForeColor = SystemColors.GrayText, Text = "「;」で区切った範囲ごとに 1 ファイル。1 つの範囲の中では「1-3,5」のように書けます" };
-    private readonly ListView _preview = new()
+    private readonly ListView _pieceList = new()
     {
         View = View.Details,
         FullRowSelect = true,
         HeaderStyle = ColumnHeaderStyle.Nonclickable,
         Dock = DockStyle.Fill,
         MultiSelect = false,
+        HideSelection = false,
     };
+    /// <summary>右にページを出している行の文字。ダークモードでは、フォーカスの無い選択行の色が背景とほとんど変わらないため。</summary>
+    private Font? _shownFont;
+    private readonly Label _pagesTitle = new() { AutoSize = true, AutoEllipsis = true, Dock = DockStyle.Fill, Margin = new Padding(0, 0, 0, 4) };
+    // 切れ目を確かめる画面なので、ページを小さめにして何枚かを並べて見渡せるようにする
+    private readonly PageStrip _pages = new() { Dock = DockStyle.Fill, TargetPageWidth = 120 };
     private readonly Label _problem = new() { AutoSize = true, ForeColor = Theme.Danger, Margin = new Padding(0, 4, 0, 0) };
     private readonly TextBox _folder = new() { Dock = DockStyle.Fill };
     private readonly Button _browse = ExcelSheetsDialog.DialogButton("参照...");
@@ -63,16 +70,16 @@ internal sealed class SplitDialog : Form
         StartPosition = FormStartPosition.CenterParent;
         AutoScaleDimensions = new SizeF(96F, 96F);
         AutoScaleMode = AutoScaleMode.Dpi;
-        ClientSize = new Size(560, 520);
-        MinimumSize = new Size(460, 440);
+        ClientSize = new Size(980, 560);
+        MinimumSize = new Size(760, 460);
 
         _byBookmarks.Text = _bookmarkFiles > 0 ? $"しおりごと（{_bookmarkFiles} ファイル）" : "しおりごと（しおりがありません）";
         _byBookmarks.Enabled = _bookmarkFiles > 0;
 
-        _preview.Columns.Add("できるファイル");
-        _preview.Columns.Add("ページ");
-        _preview.Columns.Add("枚数", -2, HorizontalAlignment.Right);
-        _preview.Resize += (_, _) => FitColumns();
+        _pieceList.Columns.Add("できるファイル");
+        _pieceList.Columns.Add("ページ");
+        _pieceList.Columns.Add("枚数", -2, HorizontalAlignment.Right);
+        _pieceList.Resize += (_, _) => FitColumns();
 
         var everyRow = Row(_byEvery, _every, _everyUnit);
         var rangesRow = new TableLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, ColumnCount = 2, Margin = Padding.Empty };
@@ -98,7 +105,7 @@ internal sealed class SplitDialog : Form
             : $"結合に使う {_used.Count} ページ（外した {_pdf.PageCount - _used.Count} ページは含めません。番号はこの {_used.Count} ページで数えます）";
         var header = new Label { Text = $"{entry.FileName}　{scope}", AutoSize = true, MaximumSize = new Size(520, 0), Margin = new Padding(0, 0, 0, 8) };
 
-        var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, Padding = new Padding(12) };
+        var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, Padding = new Padding(12, 12, 6, 12) };
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         foreach (var control in new Control[] { header, everyRow, _byBookmarks, rangesRow, _rangesHint })
         {
@@ -106,19 +113,33 @@ internal sealed class SplitDialog : Form
             root.Controls.Add(control);
         }
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        root.Controls.Add(_preview);
+        root.Controls.Add(_pieceList);
         foreach (var control in new Control[] { _problem, folderRow, _reveal, buttons })
         {
             root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             root.Controls.Add(control);
         }
-        Controls.Add(root);
+        // 右側: 一覧で選んだファイルのページ
+        var pagesPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, Padding = new Padding(6, 12, 12, 12) };
+        pagesPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        pagesPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        pagesPanel.Controls.Add(_pagesTitle);
+        var pagesFrame = new Panel { Dock = DockStyle.Fill, BorderStyle = BorderStyle.FixedSingle, Margin = Padding.Empty };
+        pagesFrame.Controls.Add(_pages);
+        pagesPanel.Controls.Add(pagesFrame);
+
+        var columns = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, Margin = Padding.Empty, Padding = Padding.Empty };
+        columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 56));
+        columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 44));
+        columns.Controls.Add(root, 0, 0);
+        columns.Controls.Add(pagesPanel, 1, 0);
+        Controls.Add(columns);
 
         // 画面の読み上げや自動操作で見分けられるよう、入力欄に名前を付ける
         (_every.Name, _every.AccessibleName) = ("Every", "何ページずつ分けるか");
         (_ranges.Name, _ranges.AccessibleName) = ("Ranges", "分ける範囲");
         (_folder.Name, _folder.AccessibleName) = ("Folder", "保存先");
-        (_preview.Name, _preview.AccessibleName) = ("Pieces", "できるファイル");
+        (_pieceList.Name, _pieceList.AccessibleName) = ("Pieces", "できるファイル");
 
         AcceptButton = _split;
         CancelButton = _cancel;
@@ -145,6 +166,13 @@ internal sealed class SplitDialog : Form
         _folder.TextChanged += (_, _) => UpdatePlan();
         _browse.Click += (_, _) => ChooseFolder();
         _split.Click += async (_, _) => await SplitAsync();
+        _pieceList.SelectedIndexChanged += (_, _) => ShowSelectedPages();
+        _pages.PageZoomRequested += page =>
+        {
+            // 見るだけの拡大表示（ここでは外す・回すはしない）
+            using var viewer = new PageViewer(_entry, page, editable: false, toggle: _ => { }, rotate: (_, _) => { });
+            viewer.ShowDialog(this);
+        };
         ResumeLayout(false);
         PerformLayout();
         UpdatePlan();
@@ -167,6 +195,18 @@ internal sealed class SplitDialog : Form
     {
         base.OnHandleCreated(e);
         Theme.ApplyTitleBar(this);
+    }
+
+    protected override void OnLoad(EventArgs e)
+    {
+        base.OnLoad(e);
+        ShowSelectedPages(); // 表示倍率の調整が済んだ文字の大きさで、太字の行を描き直す
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) _shownFont?.Dispose();
+        base.Dispose(disposing);
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
@@ -207,8 +247,10 @@ internal sealed class SplitDialog : Form
     /// <param name="positions">見えている順（1 始まりで表示する）で数えた分け方。</param>
     private void ShowPieces(IReadOnlyList<PdfSplitter.Piece> positions)
     {
-        _preview.BeginUpdate();
-        _preview.Items.Clear();
+        // 分け方を変えても、同じ位置の行を選んだままにする（ページの表示が先頭へ飛ばないように）
+        int keep = _pieceList.SelectedIndices.Count > 0 ? _pieceList.SelectedIndices[0] : 0;
+        _pieceList.BeginUpdate();
+        _pieceList.Items.Clear();
         var names = _paths.Count == positions.Count ? _paths : PdfSplitter.FileNames(_baseName, positions, "");
         for (int i = 0; i < positions.Count; i++)
         {
@@ -220,21 +262,56 @@ internal sealed class SplitDialog : Form
                 item.ForeColor = Theme.Danger;
                 item.ToolTipText = "同じ名前のファイルがあります（分割すると上書きします）";
             }
-            _preview.Items.Add(item);
+            _pieceList.Items.Add(item);
         }
-        _preview.ShowItemToolTips = true;
-        _preview.EndUpdate();
+        _pieceList.ShowItemToolTips = true;
+        if (_pieceList.Items.Count > 0)
+        {
+            var selected = _pieceList.Items[Math.Min(keep, _pieceList.Items.Count - 1)];
+            selected.Selected = true;
+            selected.Focused = true;
+            selected.EnsureVisible();
+        }
+        _pieceList.EndUpdate();
+        ShowSelectedPages();
+    }
+
+    /// <summary>一覧で選んだファイルに入るページを、書き出すときと同じ向きで右側に並べる。</summary>
+    private void ShowSelectedPages()
+    {
+        int index = _pieceList.SelectedIndices.Count > 0 ? _pieceList.SelectedIndices[0] : -1;
+        // どの行のページを出しているかを、フォーカスが入力欄に移っていても見えるようにする
+        // 一覧の文字は表示倍率の調整で大きさが変わるので、そのたびに同じ大きさの太字を作り直す
+        if (_shownFont is null || _shownFont.Size != _pieceList.Font.Size || _shownFont.FontFamily.Name != _pieceList.Font.FontFamily.Name)
+        {
+            _shownFont?.Dispose();
+            _shownFont = new Font(_pieceList.Font, FontStyle.Bold);
+        }
+        foreach (ListViewItem item in _pieceList.Items)
+        {
+            var font = item.Index == index ? _shownFont : _pieceList.Font;
+            if (!ReferenceEquals(item.Font, font)) item.Font = font;
+        }
+        if (index < 0 || index >= _pieces.Count)
+        {
+            _pagesTitle.Text = "";
+            _pages.ShowMessage(_pieces.Count == 0 ? "分け方を決めると、ここにページが出ます" : "左の一覧でファイルを選ぶと、ここにページが出ます");
+            return;
+        }
+        var piece = _pieces[index];
+        _pagesTitle.Text = $"{_pieceList.Items[index].Text}（{piece.Pages.Count} ページ）";
+        _pages.ShowDocument(_pdf, piece.Pages, _entry.Rotations, interactive: false, hint: "", shown: piece.Pages);
     }
 
     /// <summary>ファイル名の列に残りの幅をすべて配る（ページと枚数の列は文字に合わせた幅）。</summary>
     private void FitColumns()
     {
-        if (_preview.Columns.Count < 3) return;
+        if (_pieceList.Columns.Count < 3) return;
         int pages = LogicalToDeviceUnits(110), count = LogicalToDeviceUnits(56);
-        int name = Math.Max(LogicalToDeviceUnits(120), _preview.ClientSize.Width - pages - count - 1);
-        _preview.Columns[0].Width = name;
-        _preview.Columns[1].Width = pages;
-        _preview.Columns[2].Width = count;
+        int name = Math.Max(LogicalToDeviceUnits(120), _pieceList.ClientSize.Width - pages - count - 1);
+        _pieceList.Columns[0].Width = name;
+        _pieceList.Columns[1].Width = pages;
+        _pieceList.Columns[2].Width = count;
     }
 
     private void ChooseFolder()

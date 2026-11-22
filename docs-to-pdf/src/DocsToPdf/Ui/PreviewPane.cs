@@ -89,8 +89,9 @@ internal static class PageGlyphs
 internal sealed class PageStrip : ScrollableControl
 {
     private const int MaxCachedPages = 48;
-    /// <summary>1 ページをこの幅（96dpi での値）より小さくしない範囲で、横に並べる。</summary>
-    private const int TargetPageWidth = 190;
+    /// <summary>1 ページをこの幅（96dpi での値）より小さくしない範囲で、横に並べる。全体を見渡したい画面では小さくする。</summary>
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    public int TargetPageWidth { get; init; } = 190;
 
     private enum Spot { None, Page, Zoom, Rotate }
 
@@ -109,6 +110,8 @@ internal sealed class PageStrip : ScrollableControl
     private ConvertedPdf? _pdf;
     private HashSet<int> _included = [];
     private IReadOnlyDictionary<int, int> _rotations = FileEntry.NoRotations;
+    /// <summary>並べるページ（0 始まり、並べる順）。null なら全ページ。並べないページの枠は空のまま。</summary>
+    private IReadOnlyList<int>? _shown;
     private Rectangle[] _pages = [];
     private string _message = "";
     private string _hint = "";
@@ -162,14 +165,18 @@ internal sealed class PageStrip : ScrollableControl
 
     /// <param name="interactive">ページを押して外したり、回したりできるか。</param>
     /// <param name="hint">ページの上に出す、使い方の説明。</param>
+    /// <param name="shown">並べるページ（0 始まり）。null なら全ページ。分割でできる 1 ファイル分だけを見せるときに使う。</param>
     public void ShowDocument(ConvertedPdf pdf, IEnumerable<int> included, IReadOnlyDictionary<int, int> rotations,
-        bool interactive, string hint)
+        bool interactive, string hint, IReadOnlyList<int>? shown = null)
     {
         _included = [.. included];
         _interactive = interactive;
-        bool layoutChanged = !ReferenceEquals(_rotations, rotations) || _hint != hint;
+        bool shownChanged = !(_shown is null ? shown is null : shown is not null && _shown.SequenceEqual(shown));
+        bool layoutChanged = !ReferenceEquals(_rotations, rotations) || _hint != hint || shownChanged;
         _rotations = rotations;
         _hint = hint;
+        _shown = shown;
+        if (shownChanged) AutoScrollPosition = Point.Empty;
         if (!ReferenceEquals(_pdf, pdf))
         {
             _pdf = pdf;
@@ -214,21 +221,24 @@ internal sealed class PageStrip : ScrollableControl
         _hintHeight = _hint.Length == 0 ? 0
             : TextRenderer.MeasureText(_hint, Font, new Size(available, int.MaxValue), HintFlags).Height + Gap;
 
+        var order = _shown?.Where(i => i >= 0 && i < _pdf.PageCount).ToList() ?? Enumerable.Range(0, _pdf.PageCount).ToList();
+
         // 幅に余裕があれば横に並べる。1 枚が小さくなりすぎない範囲で列を増やす
         int columns = Math.Max(1, (available + Gap) / (LogicalToDeviceUnits(TargetPageWidth) + Gap));
-        columns = Math.Min(columns, Math.Max(1, _pdf.PageCount));
+        columns = Math.Min(columns, Math.Max(1, order.Count));
         int width = (available - Gap * (columns - 1)) / columns;
 
         var pages = new Rectangle[_pdf.PageCount];
         int y = Margin12 + _hintHeight;
-        for (int first = 0; first < pages.Length; first += columns)
+        for (int first = 0; first < order.Count; first += columns)
         {
             int rowHeight = 0;
-            for (int i = first; i < Math.Min(pages.Length, first + columns); i++)
+            for (int slot = first; slot < Math.Min(order.Count, first + columns); slot++)
             {
+                int i = order[slot];
                 var size = PageGlyphs.Turned(_pdf.PageSizes[i], TurnOf(i));
                 int height = Math.Max(8, (int)Math.Round(width * size.Height / Math.Max(1, size.Width)));
-                pages[i] = new Rectangle(Margin12 + (i - first) * (width + Gap), y, width, height);
+                pages[i] = new Rectangle(Margin12 + (slot - first) * (width + Gap), y, width, height);
                 rowHeight = Math.Max(rowHeight, height);
             }
             y += rowHeight + LabelHeight + Gap;
@@ -269,6 +279,7 @@ internal sealed class PageStrip : ScrollableControl
         int top = -AutoScrollPosition.Y - extra, bottom = -AutoScrollPosition.Y + ClientSize.Height + extra;
         for (int i = 0; i < _pages.Length; i++)
         {
+            if (_pages[i].IsEmpty) continue; // 並べていないページ
             if (_pages[i].Bottom + LabelHeight < top) continue;
             if (_pages[i].Top > bottom) continue;
             yield return i;

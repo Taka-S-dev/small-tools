@@ -1,5 +1,7 @@
 using System.IO.Pipes;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Security.Principal;
 using System.Text;
 
 namespace DocsToPdf.Ui;
@@ -153,8 +155,10 @@ internal sealed class SingleInstance : IDisposable
     /// <summary>最初の起動なら自分を返す。すでに起動していれば paths を送って null を返す。</summary>
     public static SingleInstance? Acquire(string[] paths)
     {
-        string user = Convert.ToHexString(Encoding.UTF8.GetBytes(Environment.UserName));
-        string name = $"DocsToPdf-{user}";
+        // パイプの名前はマシン全体で 1 つなので、利用者（SID）とセッションで分け、二重起動の判定（Local\ はセッションごと）とそろえる
+        string user = WindowsIdentity.GetCurrent().User?.Value ?? Convert.ToHexString(Encoding.UTF8.GetBytes(Environment.UserName));
+        using var self = Process.GetCurrentProcess();
+        string name = $"DocsToPdf-{user}-{self.SessionId}";
         var mutex = new Mutex(initiallyOwned: true, $@"Local\{name}", out bool isFirst);
         if (isFirst) return new SingleInstance(mutex, name);
 
@@ -162,7 +166,8 @@ internal sealed class SingleInstance : IDisposable
         try
         {
             WindowAttention.AllowOthersToTakeForeground();
-            using var client = new NamedPipeClientStream(".", name, PipeDirection.Out);
+            // 同じ名前のパイプをほかの利用者が先に作っていても、ファイルのパスをそちらへ送らない
+            using var client = new NamedPipeClientStream(".", name, PipeDirection.Out, PipeOptions.CurrentUserOnly);
             client.Connect(10_000);
             using var writer = new StreamWriter(client, new UTF8Encoding(false));
             foreach (var path in paths) writer.WriteLine(Path.GetFullPath(path));

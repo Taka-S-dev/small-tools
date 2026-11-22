@@ -4,7 +4,7 @@
 
 | ツール | 内容 | 動く環境 |
 |---|---|---|
-| [docs-to-pdf](docs-to-pdf/) | Word・Excel・PowerPoint・PDF・画像を、しおり付きの 1 つの PDF にまとめる。PDF の分割もできる。画面版とコマンドライン版がある | Windows 10 2004 以降、.NET 10、Microsoft Office |
+| [docs-to-pdf](docs-to-pdf/) | Word・Excel・PowerPoint・PDF・画像を、しおり付きの 1 つの PDF にまとめる。ファイルごとの PDF 化と、PDF の分割もできる。画面版とコマンドライン版がある | Windows 10 2004 以降、.NET 10、Microsoft Office |
 
 ## 決まり
 

@@ -2,7 +2,8 @@ using DocsToPdf.Core;
 
 namespace DocsToPdf.Ui;
 
-// 「PDF を作成」: 残っている変換を待ち、結合して保存する
+// 「結合して PDF を作成」: 残っている変換を待ち、結合して保存する
+// 「個別に PDF を保存」: 残っている変換を待ち、ファイルごとに PDF を保存する
 internal sealed partial class MainForm
 {
     /// <summary>
@@ -10,72 +11,142 @@ internal sealed partial class MainForm
     /// </summary>
     /// <param name="outputPath">保存先。null なら尋ねる。指定があるのは、スクリプトから使ったとき（--out）。</param>
     /// <returns>PDF を作れたら true。</returns>
-    private async Task<bool> CreateAsync(string? outputPath)
+    private Task<bool> CreateAsync(string? outputPath) => RunExclusiveAsync(async ct =>
+    {
+        bool batch = outputPath is not null;
+        var entries = Entries().ToList();
+        string? output = outputPath ?? AskOutputPath(entries);
+        if (output is null) return false;
+        ShowProgress(true);
+
+        // まだ終わっていない変換を待つ
+        await WaitForConversionsAsync(entries, ct);
+
+        var usable = entries.Where(e => e.IsUsable).ToList();
+        var unusable = entries.Where(e => !e.IsUsable).ToList();
+        if (usable.Count == 0)
+        {
+            SetStatus("結合できるファイルがありませんでした。");
+            ShowError("どのファイルも結合できませんでした", ProblemList(unusable));
+            return false;
+        }
+        if (unusable.Count > 0)
+        {
+            if (batch)
+            {
+                ShowError($"{unusable.Count} 件のファイルを結合できません", ProblemList(unusable));
+                return false;
+            }
+            if (!ConfirmPartial(unusable, $"{unusable.Count} 件のファイルを結合できません",
+                    "結合できるファイルだけで PDF を作りますか？", $"残りの {usable.Count} 件で作成"))
+            {
+                SetStatus("作成を取りやめました。");
+                return false;
+            }
+        }
+
+        // 結合して保存する
+        SetStatus("PDF を結合しています...");
+        var parts = usable.Select(PartOf).ToList();
+        var options = CurrentOptions(Path.GetFileNameWithoutExtension(output));
+        int pages = await Task.Run(() => PdfMerger.Merge(parts, options, output, StartProgress(parts.Count), ct), ct);
+
+        _settings.LastOutputDirectory = Path.GetDirectoryName(output);
+        SetCreatedStatus(output, usable.Count, pages);
+        WindowAttention.Flash(this);
+        if (_optOpen.Checked && !_closeWhenStopped) ShellOpen(output);
+        return true;
+    });
+
+    /// <summary>
+    /// 結合せずに、ファイルごとに「元のファイル名.pdf」を保存する。
+    /// プレビューで外したページは含めず、回したページは回した向きで保存する。ページ番号はオプションに従い、目次と白紙は付けない。
+    /// </summary>
+    private Task<bool> SaveEachAsync() => RunExclusiveAsync(async ct =>
+    {
+        var entries = Entries().ToList();
+        if (!AskSaveEachTarget(entries, out string? folder)) return false;
+        ShowProgress(true);
+
+        await WaitForConversionsAsync(entries, ct);
+
+        var usable = entries.Where(e => e.IsUsable).ToList();
+        var unusable = entries.Where(e => !e.IsUsable).ToList();
+        if (usable.Count == 0)
+        {
+            SetStatus("PDF にできるファイルがありませんでした。");
+            ShowError("どのファイルも PDF にできませんでした", ProblemList(unusable));
+            return false;
+        }
+        if (unusable.Count > 0 && !ConfirmPartial(unusable, $"{unusable.Count} 件のファイルを PDF にできません",
+                "PDF にできるファイルだけを保存しますか？", $"残りの {usable.Count} 件を保存"))
+        {
+            SetStatus("保存を取りやめました。");
+            return false;
+        }
+
+        // 一覧のどのファイル（PDF にできなかったものや、元の PDF を含む）にも書かない
+        var names = IndividualPdf.FileNames(usable.Select(e => e.Path).ToList(),
+            source => folder ?? Path.GetDirectoryName(source)!, entries.Select(e => e.Path));
+        var existing = names.Where(File.Exists).ToList();
+        if (existing.Count > 0 && !ConfirmOverwrite(existing))
+        {
+            SetStatus("保存を取りやめました。");
+            return false;
+        }
+
+        SetStatus("PDF を保存しています...");
+        var parts = usable.Select(PartOf).ToList();
+        bool pageNumbers = _optPageNumbers.Checked;
+        var progress = StartProgress(parts.Count);
+        await Task.Run(() =>
+        {
+            for (int i = 0; i < parts.Count; i++)
+            {
+                IndividualPdf.Write(parts[i], names[i], pageNumbers, ct);
+                ((IProgress<int>)progress).Report(i + 1);
+            }
+        }, ct);
+
+        if (folder is not null) _settings.LastOutputDirectory = folder;
+        SetFilesStatus(names, folder is null ? $"{names.Count} ファイルを、それぞれ元のファイルと同じフォルダに保存しました" : $"{names.Count} ファイルを保存しました");
+        WindowAttention.Flash(this);
+        if (_optOpen.Checked && !_closeWhenStopped) Reveal(names[0]);
+        return true;
+    });
+
+    private static MergePart PartOf(FileEntry e) =>
+        new(e.Converted!.PdfPath, e.Title, e.SelectedPages, e.Converted.Outline, e.Rotations);
+
+    /// <summary>進み具合のバーを 0 から始め、1 件終わるごとに進める報告先を返す。</summary>
+    private Progress<int> StartProgress(int total)
+    {
+        _progress.Maximum = total;
+        _progress.Value = 0;
+        return new Progress<int>(done =>
+        {
+            _progress.Value = Math.Min(_progress.Maximum, done);
+            _taskbar.Set(Handle, done, total);
+        });
+    }
+
+    /// <summary>
+    /// 一覧を変えられない状態にして work を行い、中止と保存の失敗を画面に出す。
+    /// 保存先を選んでいる間も含めて一覧を止める（選んだ後で行が増減しないように）。元のファイルが変わっていたら、先に変換し直す。
+    /// </summary>
+    private async Task<bool> RunExclusiveAsync(Func<CancellationToken, Task<bool>> work)
     {
         if (_busy || _list.Items.Count == 0) return false;
         EndEdit(commit: true);
-        bool batch = outputPath is not null;
 
-        // 保存先を選んでいる間も含めて、一覧を変えられないようにする（選んだ後で行が増減しないように）
         var cts = _cts = new CancellationTokenSource();
         SetBusy(true);
         ShowProgress(false);
         try
         {
-            // 元のファイルが変わっていたら、変換し直す
             await _sourceCheck;
             await CheckSourcesAsync();
-
-            var entries = Entries().ToList();
-            string? output = outputPath ?? AskOutputPath(entries);
-            if (output is null) return false;
-            ShowProgress(true);
-
-            // まだ終わっていない変換を待つ
-            await WaitForConversionsAsync(entries, cts.Token);
-
-            var usable = entries.Where(e => e.IsUsable).ToList();
-            var unusable = entries.Where(e => !e.IsUsable).ToList();
-            if (usable.Count == 0)
-            {
-                SetStatus("結合できるファイルがありませんでした。");
-                ShowError("どのファイルも結合できませんでした", ProblemList(unusable));
-                return false;
-            }
-            if (unusable.Count > 0)
-            {
-                if (batch)
-                {
-                    ShowError($"{unusable.Count} 件のファイルを結合できません", ProblemList(unusable));
-                    return false;
-                }
-                if (!ConfirmPartial(unusable, usable.Count))
-                {
-                    SetStatus("作成を取りやめました。");
-                    return false;
-                }
-            }
-
-            // 結合して保存する
-            SetStatus("PDF を結合しています...");
-            var parts = usable
-                .Select(e => new MergePart(e.Converted!.PdfPath, e.Title, e.SelectedPages, e.Converted.Outline, e.Rotations))
-                .ToList();
-            var options = CurrentOptions(Path.GetFileNameWithoutExtension(output));
-            _progress.Maximum = parts.Count;
-            _progress.Value = 0;
-            var progress = new Progress<int>(done =>
-            {
-                _progress.Value = Math.Min(_progress.Maximum, done);
-                _taskbar.Set(Handle, done, parts.Count);
-            });
-            int pages = await Task.Run(() => PdfMerger.Merge(parts, options, output, progress, cts.Token), cts.Token);
-
-            _settings.LastOutputDirectory = Path.GetDirectoryName(output);
-            SetCreatedStatus(output, usable.Count, pages);
-            WindowAttention.Flash(this);
-            if (_optOpen.Checked && !_closeWhenStopped) ShellOpen(output);
-            return true;
+            return await work(cts.Token);
         }
         catch (OperationCanceledException)
         {
@@ -190,20 +261,93 @@ internal sealed partial class MainForm
         else _taskbar.Clear(Handle);
     }
 
-    private bool ConfirmPartial(IReadOnlyList<FileEntry> unusable, int usableCount)
+    private bool ConfirmPartial(IReadOnlyList<FileEntry> unusable, string heading, string text, string proceed)
     {
-        var merge = new TaskDialogButton($"残りの {usableCount} 件で作成");
+        var go = new TaskDialogButton(proceed);
         var page = new TaskDialogPage
         {
             Caption = AppTitle,
-            Heading = $"{unusable.Count} 件のファイルを結合できません",
-            Text = "結合できるファイルだけで PDF を作りますか？",
+            Heading = heading,
+            Text = text,
             Icon = TaskDialogIcon.Warning,
             Expander = new TaskDialogExpander(ProblemList(unusable)) { Expanded = true, Position = TaskDialogExpanderPosition.AfterText },
-            Buttons = { merge, TaskDialogButton.Cancel },
-            DefaultButton = merge,
+            Buttons = { go, TaskDialogButton.Cancel },
+            DefaultButton = go,
         };
-        return TaskDialog.ShowDialog(this, page) == merge;
+        return TaskDialog.ShowDialog(this, page) == go;
+    }
+
+    /// <summary>保存先にすでに同じ名前の PDF があるとき、上書きしてよいかを尋ねる。既定は「キャンセル」。</summary>
+    private bool ConfirmOverwrite(IReadOnlyList<string> existing)
+    {
+        var overwrite = new TaskDialogButton("上書きして保存");
+        string list = string.Join("\r\n", existing.Take(15).Select(p => "・" + Path.GetFileName(p)))
+            + (existing.Count > 15 ? $"\r\nほか {existing.Count - 15} 件" : "");
+        var page = new TaskDialogPage
+        {
+            Caption = AppTitle,
+            Heading = $"{existing.Count} 件の PDF が保存先にすでにあります",
+            Text = "上書きしますか？",
+            Icon = TaskDialogIcon.Warning,
+            Expander = new TaskDialogExpander(list) { Expanded = true, Position = TaskDialogExpanderPosition.AfterText },
+            Buttons = { overwrite, TaskDialogButton.Cancel },
+            DefaultButton = TaskDialogButton.Cancel,
+        };
+        return TaskDialog.ShowDialog(this, page) == overwrite;
+    }
+
+    /// <summary>
+    /// ファイルごとの PDF をどこに保存するかを尋ねる。「元のファイルと同じフォルダ」なら folder は null。
+    /// 前回選んだほうを既定にする（Enter だけで同じ保存先をくり返せるように）。
+    /// </summary>
+    /// <returns>保存先が決まったら true。キャンセルなら false。</returns>
+    private bool AskSaveEachTarget(IReadOnlyList<FileEntry> entries, out string? folder)
+    {
+        folder = null;
+#if DEBUG
+        // 画面の自動操作で確かめるとき用（Debug ビルドだけ）。"beside" なら元のファイルと同じフォルダ
+        if (Environment.GetEnvironmentVariable("DOCSTOPDF_TEST_SAVE_FOLDER") is { Length: > 0 } forced)
+        {
+            if (forced != "beside") folder = Path.GetFullPath(forced);
+            return true;
+        }
+#endif
+
+        var beside = new TaskDialogCommandLinkButton("元のファイルと同じフォルダ", "それぞれのファイルの隣に「元のファイル名.pdf」を保存します");
+        var choose = new TaskDialogCommandLinkButton("フォルダを選ぶ...", "すべてを 1 つのフォルダにまとめて保存します");
+        var page = new TaskDialogPage
+        {
+            Caption = AppTitle,
+            Heading = $"{entries.Count} ファイルの PDF をどこに保存しますか？",
+            Buttons = { beside, choose, TaskDialogButton.Cancel },
+            DefaultButton = _settings.SaveEachBesideSource ? beside : choose,
+        };
+        var answer = TaskDialog.ShowDialog(this, page);
+        if (answer == beside)
+        {
+            _settings.SaveEachBesideSource = true;
+            return true;
+        }
+        if (answer != choose) return false;
+
+        folder = AskOutputFolder(entries);
+        if (folder is null) return false;
+        _settings.SaveEachBesideSource = false;
+        return true;
+    }
+
+    /// <summary>ファイルごとの PDF を保存するフォルダを尋ねる。最初に開くのは、前回の保存先か、先頭のファイルのフォルダ。</summary>
+    private string? AskOutputFolder(IReadOnlyList<FileEntry> entries)
+    {
+        string firstDir = Path.GetDirectoryName(entries[0].Path)!;
+        using var dialog = new FolderBrowserDialog
+        {
+            Description = "ファイルごとの PDF を保存するフォルダ",
+            UseDescriptionForTitle = true,
+            ShowNewFolderButton = true,
+            InitialDirectory = Directory.Exists(_settings.LastOutputDirectory) ? _settings.LastOutputDirectory! : firstDir,
+        };
+        return dialog.ShowDialog(this) == DialogResult.OK ? Path.GetFullPath(dialog.SelectedPath) : null;
     }
 
     private static string ProblemList(IEnumerable<FileEntry> entries) =>

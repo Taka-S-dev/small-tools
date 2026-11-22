@@ -657,7 +657,7 @@ internal sealed partial class MainForm
         if (_busy || !entry.IsUsable) return;
         using var dialog = new SplitDialog(entry);
         if (dialog.ShowDialog(this) != DialogResult.OK || dialog.Written.Count == 0) return;
-        SetSplitStatus(dialog.Written);
+        SetFilesStatus(dialog.Written, $"{dialog.Written.Count} ファイルに分割しました");
         if (dialog.RevealAfterwards) Reveal(dialog.Written[0]);
     }
 

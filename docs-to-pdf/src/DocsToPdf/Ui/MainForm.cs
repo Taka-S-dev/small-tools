@@ -5,7 +5,7 @@ namespace DocsToPdf.Ui;
 
 /// <summary>
 /// メインの画面。左にファイルの一覧、右に選んだファイルのプレビューを置く。
-/// ファイルは一覧に入った時点で裏で PDF にしておき、「PDF を作成」では結合だけを行う。
+/// ファイルは一覧に入った時点で裏で PDF にしておき、「結合して PDF を作成」では結合だけを行う。
 /// このファイルは画面の組み立てとウィンドウまわり。一覧の操作は MainForm.List.cs、作成は MainForm.Create.cs。
 /// </summary>
 internal sealed partial class MainForm : Form
@@ -70,7 +70,8 @@ internal sealed partial class MainForm : Form
     private readonly LinkLabel _status = new() { Dock = DockStyle.Fill, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft, LinkArea = new LinkArea(0, 0) };
     private readonly Label _summary = new() { Dock = DockStyle.Fill, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft };
     private readonly ProgressBar _progress = new() { Dock = DockStyle.Fill, Visible = false };
-    private readonly Button _run = new() { Text = "PDF を作成...", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
+    private readonly Button _run = new() { Text = "結合して PDF を作成...", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
+    private readonly Button _runEach = new() { Text = "個別に PDF を保存...", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
     private readonly Button _cancel = new() { Text = "中止", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Enabled = false };
     private readonly ToolTip _toolTip = new();
 
@@ -113,7 +114,7 @@ internal sealed partial class MainForm : Form
         _optOpen.Checked = startup.IsBatch ? startup.Open : _settings.OpenAfterCreate;
 
         RefreshAll();
-        SetStatus("ファイルを追加すると、すぐ裏で PDF に変換します。並べ替えて「PDF を作成」を押してください。");
+        SetStatus("ファイルを追加すると、すぐ裏で PDF に変換します。並べ替えて「結合して PDF を作成」を押してください（結合しないときは「個別に PDF を保存」）。");
     }
 
     /// <summary>スクリプトから使ったとき（--out）の終了コード。</summary>
@@ -161,17 +162,20 @@ internal sealed partial class MainForm : Form
         gauge.Controls.Add(_summary);
         gauge.Controls.Add(_progress);
 
-        var bottom = new TableLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, ColumnCount = 3, Margin = new Padding(0, 4, 0, 0) };
+        var bottom = new TableLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, ColumnCount = 4, Margin = new Padding(0, 4, 0, 0) };
         bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        bottom.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         bottom.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         bottom.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         bottom.Controls.Add(gauge, 0, 0);
         bottom.Controls.Add(_cancel, 1, 0);
-        bottom.Controls.Add(_run, 2, 0);
+        bottom.Controls.Add(_runEach, 2, 0);
+        bottom.Controls.Add(_run, 3, 0);
 
-        // 最後に押すボタンなので、ほかより目立たせる
+        // 最後に押すボタンなので、ほかより目立たせる（個別の保存は、それに並ぶ控えめな選択肢）
         _run.Font = new Font(Font, FontStyle.Bold);
         _run.Padding = new Padding(20, 6, 20, 6);
+        _runEach.Padding = new Padding(10, 6, 10, 6);
         _cancel.Padding = new Padding(10, 6, 10, 6);
 
         _status.Margin = new Padding(0, 6, 0, 0);
@@ -192,6 +196,7 @@ internal sealed partial class MainForm : Form
         root.Controls.Add(bottom);
         Controls.Add(root);
 
+        _toolTip.SetToolTip(_runEach, "結合せずに、ファイルごとに「元のファイル名.pdf」を保存（元のファイルと同じフォルダか、選んだフォルダ）");
         _toolTip.SetToolTip(_addFiles, "結合するファイルを選ぶ（Ctrl+O）");
         _toolTip.SetToolTip(_addFolder, "フォルダの中の対象ファイルを、サブフォルダも含めてすべて追加");
         _toolTip.SetToolTip(_moveUp, "選んだ行を 1 つ上へ（Alt+↑）。行のドラッグでも動かせます");
@@ -259,6 +264,7 @@ internal sealed partial class MainForm : Form
         _clear.Click += (_, _) => ClearAll();
         _undo.Click += (_, _) => Undo();
         _run.Click += async (_, _) => await CreateAsync(null);
+        _runEach.Click += async (_, _) => await SaveEachAsync();
         _cancel.Click += (_, _) => CancelCreate();
         _emptyHint.Click += (_, _) => ChooseFiles();
         _status.LinkClicked += OnStatusLinkClicked;
@@ -412,13 +418,13 @@ internal sealed partial class MainForm : Form
         _toolTip.SetToolTip(_status, output);
     }
 
-    /// <summary>分割できたことを、保存先を開くためのリンク付きで出す。</summary>
-    private void SetSplitStatus(IReadOnlyList<string> files)
+    /// <summary>複数のファイルを書き出したこと（分割、個別の保存）を、保存先を開くためのリンク付きで出す。</summary>
+    private void SetFilesStatus(IReadOnlyList<string> files, string done)
     {
         _lastOutput = files[0];
         // 保存先の長いパスを行に入れるとリンクが見えなくなるので、パスはツールチップに回す
         const string reveal = "フォルダで表示";
-        string head = $"{files.Count} ファイルに分割しました（{Path.GetFileName(files[0])} など）　";
+        string head = $"{done}（{Path.GetFileName(files[0])} など）　";
         _status.Links.Clear();
         _status.Text = head + reveal;
         _status.Links.Add(head.Length, reveal.Length, "reveal");
@@ -484,6 +490,7 @@ internal sealed partial class MainForm : Form
         _undo.Enabled = idle && _undoStack.Count > 0;
         // フォルダの中を探している間は、見つかったものがまだ一覧に入っていないので作成させない
         _run.Enabled = idle && count > 0 && !IsScanning;
+        _runEach.Enabled = _run.Enabled;
         _cancel.Enabled = (_busy && _cts is { IsCancellationRequested: false }) || IsScanning;
         _emptyHint.Cursor = idle ? Cursors.Hand : Cursors.Default;
         foreach (var option in new[] { _optPageNumbers, _optToc, _optDuplex, _optOpen })

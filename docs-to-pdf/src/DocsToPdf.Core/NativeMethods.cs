@@ -13,6 +13,9 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
 
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern uint GetConsoleProcessList(uint[] processList, uint processCount);
+
     [DllImport("ole32.dll")]
     public static extern int CoRegisterMessageFilter(IOleMessageFilter? newFilter, out IOleMessageFilter? oldFilter);
 }

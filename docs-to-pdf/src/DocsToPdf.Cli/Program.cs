@@ -8,7 +8,7 @@ namespace DocsToPdf.Cli;
 internal static class ExitCodes
 {
     public const int Success = 0;
-    /// <summary>変換・結合・分割に失敗した、または上書きを断った。</summary>
+    /// <summary>変換・結合・分割に失敗した（ファイルごとに PDF にするときは、1 件でも失敗した）、または上書きを断った。</summary>
     public const int Failure = 1;
     /// <summary>指定が正しくない（ファイルが見つからない、オプションの組み合わせが違うなど）。</summary>
     public const int Usage = 2;
@@ -34,11 +34,9 @@ internal static class Program
             if (r.GetValueOrDefault<int>() < 1) r.AddError("--timeout は 1 以上の分で指定してください。");
         });
 
-        var root = new RootCommand("Word・Excel・PowerPoint・PDF・画像を、しおり付きの PDF に結合する、または PDF を分割する。")
-        {
-            BuildMerge(),
-            BuildSplit(),
-        };
+        var root = BuildRoot();
+        root.Subcommands.Add(BuildMerge());
+        root.Subcommands.Add(BuildSplit());
 
         // ライブラリが用意する --help / --version の説明を、ほかと同じ日本語にそろえる
         foreach (var option in root.Options)
@@ -47,17 +45,143 @@ internal static class Program
             else if (option is VersionOption) option.Description = "バージョンを表示する";
         }
 
+        // 「送る」メニューや exe へのドロップで起動されたときは、この実行のために開いた画面で動いている
+        bool ownWindow = OwnsConsoleWindow();
+
+        int code;
         var parsed = root.Parse(args);
         if (parsed.Errors.Count > 0)
         {
             foreach (var error in parsed.Errors) Console.Error.WriteLine($"エラー: {error.Message}");
             Console.Error.WriteLine("使い方は docs2pdf --help で確認できます。");
+            code = ExitCodes.Usage;
+        }
+        else
+        {
+            // Ctrl+C を押すと中止の合図が届く。Office の後片付けが終わるまで少し待ってから終了させる
+            var config = new InvocationConfiguration { ProcessTerminationTimeout = TimeSpan.FromSeconds(15) };
+            code = await parsed.InvokeAsync(config);
+        }
+
+        if (ownWindow) WaitBeforeClosing(code);
+        return code;
+    }
+
+    /// <summary>
+    /// この実行のために開いた画面か（つながっているプロセスが自分だけ）。
+    /// cmd や PowerShell から実行したときは、その画面を使い続けるので false。
+    /// </summary>
+    private static bool OwnsConsoleWindow()
+    {
+        if (Console.IsInputRedirected || Console.IsErrorRedirected) return false;
+        var ids = new uint[2];
+        return NativeMethods.GetConsoleProcessList(ids, (uint)ids.Length) == 1;
+    }
+
+    /// <summary>
+    /// 開いた画面が結果を見る前に消えないよう、数秒待ってから閉じる。エラーがあったときは、読めるよう長めに待つ。
+    /// キーを押せば待たずに閉じる。Ctrl+C で中止したときは、そのまま閉じる。
+    /// </summary>
+    private static void WaitBeforeClosing(int code)
+    {
+        if (code == ExitCodes.Cancelled) return;
+        bool failed = code != ExitCodes.Success;
+        int seconds = failed ? 10 : 3;
+        string head = failed ? "エラーがありました。" : "";
+        if (failed) Console.Error.WriteLine();
+
+        for (int left = seconds; left > 0; left--)
+        {
+            Console.Error.Write($"\r{head}{left} 秒後に閉じます   ");
+            for (int tick = 0; tick < 10; tick++)
+            {
+                if (Console.KeyAvailable)
+                {
+                    Console.ReadKey(intercept: true);
+                    return;
+                }
+                Thread.Sleep(100);
+            }
+        }
+    }
+
+    /// <summary>
+    /// サブコマンドなし: ファイルごとに PDF にする（docs2pdf 報告.docx → 報告.pdf）。
+    /// 結合は merge、分割は split。
+    /// </summary>
+    private static RootCommand BuildRoot()
+    {
+        var inputs = new Argument<string[]>("入力")
+        {
+            Description = "PDF にするファイルやフォルダ（フォルダはサブフォルダも含む）。PDF はすでに PDF なので飛ばす",
+            Arity = ArgumentArity.ZeroOrMore,
+        };
+        var output = new Option<string?>("--out", "-o") { Description = "書き出すフォルダ（既定は、それぞれのファイルと同じフォルダ）", HelpName = "フォルダ" };
+        var numbers = new Option<bool>("--page-numbers") { Description = "各ページの下に「3 / 25」の形でページ番号を入れる" };
+
+        var root = new RootCommand(
+            "Word・Excel・PowerPoint・画像を、ファイルごとに PDF にする（同じ名前の .pdf を隣に作る）。\n" +
+            "1 つにまとめるときは merge、PDF を分けるときは split を使う。")
+        {
+            inputs, output, numbers, Force, Timeout, Quiet,
+        };
+        root.SetAction((result, ct) => ConvertEachAsync(
+            result.GetValue(inputs) ?? [], result.GetValue(output), result.GetValue(numbers),
+            result.GetValue(Force), result.GetValue(Timeout), new Log(result.GetValue(Quiet)), ct));
+        return root;
+    }
+
+    private static async Task<int> ConvertEachAsync(string[] inputs, string? output, bool pageNumbers, bool force,
+        int timeoutMinutes, Log log, CancellationToken ct)
+    {
+        if (inputs.Length == 0)
+        {
+            log.Error("PDF にするファイルかフォルダを指定してください。使い方は docs2pdf --help で確認できます。");
             return ExitCodes.Usage;
         }
 
-        // Ctrl+C を押すと中止の合図が届く。Office の後片付けが終わるまで少し待ってから終了させる
-        var config = new InvocationConfiguration { ProcessTerminationTimeout = TimeSpan.FromSeconds(15) };
-        return await parsed.InvokeAsync(config);
+        var (found, rejected) = InputFiles.Expand(inputs, sortAll: false);
+        foreach (var path in rejected) log.Error($"見つからないか、扱えない形式です: {path}");
+        if (rejected.Count > 0) return ExitCodes.Usage;
+
+        // PDF はすでに PDF。前に作った PDF がフォルダにあっても、もう一度 PDF にしないよう飛ばす
+        static bool IsPdf(string path) => Path.GetExtension(path).Equals(".pdf", StringComparison.OrdinalIgnoreCase);
+        foreach (var input in inputs.Where(i => IsPdf(i) && File.Exists(i)))
+            log.Progress($"すでに PDF なので飛ばします: {input}");
+        var files = found.Where(f => !IsPdf(f)).ToList();
+        if (files.Count == 0)
+        {
+            log.Error("PDF にするファイルがありません（Word・Excel・PowerPoint・画像が見つかりません）。");
+            return ExitCodes.Usage;
+        }
+
+        string? folder = output is null ? null : Path.GetFullPath(output);
+        var targets = IndividualPdf.FileNames(files, file => folder ?? Path.GetDirectoryName(file)!);
+        if (!CanWrite(targets, force, log)) return ExitCodes.Failure;
+
+        return await RunAsync(log, timeoutMinutes, async session =>
+        {
+            // 変換できたものから順に書き出す（途中で止めても、終わった分は残る）
+            int written = 0;
+            await session.ConvertEachAsync(files, ct, async (i, pdf) =>
+            {
+                var part = new MergePart(pdf.PdfPath, Path.GetFileNameWithoutExtension(files[i]),
+                    Enumerable.Range(0, pdf.PageCount).ToArray(), pdf.Outline);
+                Directory.CreateDirectory(Path.GetDirectoryName(targets[i])!);
+                await Task.Run(() => IndividualPdf.Write(part, targets[i], pageNumbers, ct), ct);
+                log.Result(targets[i]);
+                written++;
+            });
+
+            int failed = files.Count - written;
+            if (failed > 0)
+            {
+                log.Error($"{failed} 件のファイルを PDF にできませんでした（ほかの {written} 件は書き出しました）。");
+                return ExitCodes.Failure;
+            }
+            log.Progress($"{written} 件のファイルを PDF にしました");
+            return ExitCodes.Success;
+        });
     }
 
     private static Command BuildMerge()
@@ -123,7 +247,7 @@ internal static class Program
             int pages = await Task.Run(() => PdfMerger.Merge(parts, options, target, ct: ct), ct);
 
             log.Progress($"作成しました（{files.Count} ファイル、{pages} ページ）");
-            Log.Result(target);
+            log.Result(target);
             if (open) ShellOpen(target, log);
             return ExitCodes.Success;
         });
@@ -211,7 +335,7 @@ internal static class Program
             log.Progress($"{pieces.Count} ファイルに分けています...");
             Directory.CreateDirectory(folder);
             await Task.Run(() => PdfSplitter.Split(pdf.PdfPath, pdf.Outline, baseName, pieces, paths, ct: ct), ct);
-            foreach (var path in paths) Log.Result(path);
+            foreach (var path in paths) log.Result(path);
             log.Progress($"分割しました（全 {pdf.PageCount} ページ → {pieces.Count} ファイル）");
             return ExitCodes.Success;
         });

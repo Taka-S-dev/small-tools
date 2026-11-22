@@ -93,7 +93,7 @@ internal sealed class PageStrip : ScrollableControl
     [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
     public int TargetPageWidth { get; init; } = 190;
 
-    private enum Spot { None, Page, Zoom, Rotate }
+    private enum Spot { None, Page, Zoom, Rotate, Cut }
 
     private sealed record CachedPage(Bitmap? Image, int Width, int Turn);
 
@@ -117,6 +117,10 @@ internal sealed class PageStrip : ScrollableControl
     private string _hint = "";
     private int _hintHeight;
     private bool _interactive;
+    /// <summary>区切りモード: ページに「ここから分ける」ボタンを出し、押されたら PageCutToggled を知らせる（分割の画面で、ページを見ながら区切るとき）。</summary>
+    private bool _cutting;
+    /// <summary>新しいファイルが始まるページ → 何番目のファイルか（1 始まり）。区切りの印を描くのに使う。</summary>
+    private IReadOnlyDictionary<int, int> _starts = new Dictionary<int, int>();
     private int _hover = -1;
     private Spot _hoverSpot;
     private int _menuPage = -1;
@@ -149,6 +153,29 @@ internal sealed class PageStrip : ScrollableControl
     public event Action<int>? PageZoomRequested;
     /// <summary>ページと、回す角度（右へ 90、左へ -90）。</summary>
     public event Action<int, int>? PageRotateRequested;
+    /// <summary>区切りモードで「ここから分ける」「区切りを外す」が押されたページ。</summary>
+    public event Action<int>? PageCutToggled;
+
+    /// <summary>ページの下に出す番号。null なら元の PDF でのページ番号（1 始まり）。</summary>
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    public Func<int, string>? PageLabel { get; set; }
+
+    /// <summary>区切りモードを切り替え、新しいファイルが始まるページ（→ 何番目のファイルか）を描く。</summary>
+    public void SetCuts(bool cutting, IReadOnlyDictionary<int, int> starts)
+    {
+        _cutting = cutting;
+        _starts = starts;
+        Invalidate();
+    }
+
+    /// <summary>そのページが上に来るようにスクロールする。</summary>
+    public void ScrollToPage(int page)
+    {
+        if (page < 0 || page >= _pages.Length || _pages[page].IsEmpty) return;
+        AutoScrollPosition = new Point(0, Math.Max(0, _pages[page].Top - Margin12));
+        Invalidate();
+        EnsureRendered();
+    }
 
     /// <summary>ページの代わりに、中央に文を出す。</summary>
     public void ShowMessage(string message)
@@ -286,6 +313,23 @@ internal sealed class PageStrip : ScrollableControl
         }
     }
 
+    /// <summary>
+    /// 区切りモードでページの左下に出すボタンの文字。1 つ目のファイルの先頭は外せない区切りなので出さない。
+    /// ページを押しただけで区切りが変わらないよう、区切りはこのボタンでだけ変える。
+    /// </summary>
+    private string? CutTextOf(int page) =>
+        !_cutting ? null
+        : _starts.TryGetValue(page, out int file) ? (file == 1 ? null : "区切りを外す")
+        : "ここから分ける";
+
+    private Rectangle CutButtonOf(Rectangle page, string text)
+    {
+        int inset = LogicalToDeviceUnits(4), pad = LogicalToDeviceUnits(8);
+        int width = Math.Min(page.Width - inset * 2, TextRenderer.MeasureText(text, Font).Width + pad * 2);
+        int height = ButtonSize;
+        return new Rectangle(page.Left + inset, page.Bottom - inset - height, Math.Max(0, width), height);
+    }
+
     /// <summary>ページの右上に重ねるボタンの位置。右から「拡大」「回転」の順。</summary>
     private (Rectangle Zoom, Rectangle Rotate) ButtonsOf(Rectangle page)
     {
@@ -351,18 +395,45 @@ internal sealed class PageStrip : ScrollableControl
                 var (zoom, rotate) = ButtonsOf(rect);
                 DrawButton(g, zoom, PageGlyphs.Zoom, _hoverSpot == Spot.Zoom);
                 if (_interactive) DrawButton(g, rotate, PageGlyphs.RotateRight, _hoverSpot == Spot.Rotate);
+                if (CutTextOf(i) is { } cutText) DrawTextButton(g, CutButtonOf(rect, cutText), cutText, _hoverSpot == Spot.Cut);
             }
             else
             {
                 g.DrawRectangle(border, rect.X, rect.Y, rect.Width - 1, rect.Height - 1);
             }
 
+            // 新しいファイルが始まるページは、左に縦線を引き、下に「ここから N つ目」と出す
+            bool starts = _starts.TryGetValue(i, out int fileNumber);
+            if (starts)
+            {
+                int bar = LogicalToDeviceUnits(3);
+                using var accent = new SolidBrush(SystemColors.Highlight);
+                g.FillRectangle(accent, rect.X - bar - LogicalToDeviceUnits(1), rect.Y - LogicalToDeviceUnits(2), bar, rect.Height + LogicalToDeviceUnits(4));
+            }
+
             var label = new Rectangle(rect.X, rect.Bottom, rect.Width, LabelHeight);
             int turn = TurnOf(i);
-            string text = $"{i + 1}" + (turn != 0 ? $"・{turn}° 回転" : "") + (included ? "" : "（結合しない）");
-            TextRenderer.DrawText(g, text, Font, label, included ? ForeColor : Theme.Danger,
+            string number = PageLabel?.Invoke(i) ?? $"{i + 1}";
+            string text = number + (starts ? $"・ここから {fileNumber} つ目" : "") + (turn != 0 ? $"・{turn}° 回転" : "") + (included ? "" : "（結合しない）");
+            TextRenderer.DrawText(g, text, Font, label, !included ? Theme.Danger : starts ? Theme.Link : ForeColor,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
         }
+    }
+
+    /// <summary>文字のボタン（「ここから分ける」など）。記号のボタンと同じ見た目で、文字だけ通常のフォントで描く。</summary>
+    private void DrawTextButton(Graphics g, Rectangle rect, string text, bool hot)
+    {
+        using var fill = new SolidBrush(hot ? SystemColors.Highlight : Theme.OverlayButton);
+        using var edge = new Pen(hot ? SystemColors.Highlight : Theme.OverlayButtonEdge);
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        using (var path = RoundedRect(rect, LogicalToDeviceUnits(4)))
+        {
+            g.FillPath(fill, path);
+            g.DrawPath(edge, path);
+        }
+        g.SmoothingMode = SmoothingMode.Default;
+        TextRenderer.DrawText(g, text, Font, rect, hot ? SystemColors.HighlightText : Theme.OverlayButtonText,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
     }
 
     private void DrawButton(Graphics g, Rectangle rect, string glyph, bool hot)
@@ -475,6 +546,7 @@ internal sealed class PageStrip : ScrollableControl
             var rect = OnScreen(_pages[i]);
             var (zoom, rotate) = ButtonsOf(rect);
             if (zoom.Contains(point)) return (i, Spot.Zoom);
+            if (CutTextOf(i) is { } cutText && CutButtonOf(rect, cutText).Contains(point)) return (i, Spot.Cut);
             if (_interactive && rotate.Contains(point)) return (i, Spot.Rotate);
             rect.Height += LabelHeight;
             if (rect.Contains(point)) return (i, Spot.Page);
@@ -485,7 +557,7 @@ internal sealed class PageStrip : ScrollableControl
     private void UpdateHover(Point point)
     {
         var (page, spot) = HitTest(point);
-        Cursor = spot is Spot.Zoom or Spot.Rotate || (spot == Spot.Page && _interactive) ? Cursors.Hand : Cursors.Default;
+        Cursor = spot is Spot.Zoom or Spot.Rotate or Spot.Cut || (spot == Spot.Page && _interactive) ? Cursors.Hand : Cursors.Default;
         if (page == _hover && spot == _hoverSpot) return;
         _hover = page;
         _hoverSpot = spot;
@@ -513,7 +585,8 @@ internal sealed class PageStrip : ScrollableControl
         if (e.Button == MouseButtons.Right)
         {
             _menuPage = page;
-            _menuRight.Enabled = _menuLeft.Enabled = _menuToggle.Enabled = _interactive;
+            // 見るだけのときは、使えない操作を出さない（拡大だけにする）
+            foreach (ToolStripItem item in _menu.Items) item.Visible = _interactive || item == _menuZoom;
             _menuToggle.Text = _included.Contains(page) ? "このページを結合しない" : "このページを結合する";
             _menu.Show(this, e.Location);
             return;
@@ -530,6 +603,9 @@ internal sealed class PageStrip : ScrollableControl
                 break;
             case Spot.Page when _interactive:
                 PageClicked?.Invoke(page);
+                break;
+            case Spot.Cut:
+                PageCutToggled?.Invoke(page);
                 break;
             case Spot.Page:
                 PageZoomRequested?.Invoke(page); // 作成中など変更できないときは、押すと大きく見せる

@@ -42,6 +42,23 @@ internal static class PdfSplitter
         return pieces;
     }
 
+    /// <summary>
+    /// 区切り（新しいファイルが始まるページ、1 始まり）から、すべてのページを順に分ける範囲の書き方を作る。
+    /// 先頭のページはいつも 1 つ目のファイルの始まり。例: 12 ページで 5 と 9 から区切る → "1-4; 5-8; 9-12"。
+    /// </summary>
+    public static string RangesFromStarts(IEnumerable<int> starts, int pageCount)
+    {
+        if (pageCount <= 0) return "";
+        var cuts = starts.Where(s => s >= 1 && s <= pageCount).Append(1).Distinct().Order().ToList();
+        var parts = new List<string>(cuts.Count);
+        for (int i = 0; i < cuts.Count; i++)
+        {
+            int from = cuts[i], to = i + 1 < cuts.Count ? cuts[i + 1] - 1 : pageCount;
+            parts.Add(from == to ? $"{from}" : $"{from}-{to}");
+        }
+        return string.Join("; ", parts);
+    }
+
     /// <summary>「1-3; 4-8; 9-」のように「;」か改行で区切った書き方を、範囲ごとに分ける（画面の入力欄用）。</summary>
     public static IReadOnlyList<string> SplitRangeList(string text) =>
         text.Split([';', '；', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);

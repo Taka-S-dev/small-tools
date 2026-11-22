@@ -8,6 +8,7 @@ namespace DocsToPdf.Ui;
 /// プレビューで結合から外したページは含めず、回したページは回した向きで書き出す。
 /// ページの番号は、外したページを除いた「見えている順」で数える。
 /// 一覧で選んだファイルに入るページを、右側に並べて見せる（切れ目が思ったところにあるかを、書き出す前に確かめられるように）。
+/// 「範囲を指定」では書き出すページをすべて並べ、各ページの「ここから分ける」ボタンで区切れる（範囲の欄が書き換わる。欄に手で書いてもよい）。
 /// </summary>
 internal sealed class SplitDialog : Form
 {
@@ -37,6 +38,11 @@ internal sealed class SplitDialog : Form
     };
     /// <summary>右にページを出している行の文字。ダークモードでは、フォーカスの無い選択行の色が背景とほとんど変わらないため。</summary>
     private Font? _shownFont;
+    private static readonly IReadOnlyDictionary<int, int> NoStarts = new Dictionary<int, int>();
+    /// <summary>元のページ番号 → 結合に使うページの中での位置（1 始まり）。範囲の欄と同じ数え方。</summary>
+    private readonly Dictionary<int, int> _positionOf = [];
+    /// <summary>一覧を作り直している間（選択の変化で右側をスクロールさせない）。</summary>
+    private bool _rebuilding;
     private readonly Label _pagesTitle = new() { AutoSize = true, AutoEllipsis = true, Dock = DockStyle.Fill, Margin = new Padding(0, 0, 0, 4) };
     // 切れ目を確かめる画面なので、ページを小さめにして何枚かを並べて見渡せるようにする
     private readonly PageStrip _pages = new() { Dock = DockStyle.Fill, TargetPageWidth = 120 };
@@ -59,6 +65,7 @@ internal sealed class SplitDialog : Form
         _bookmarks = PdfSplitter.Restrict(_pdf.Outline, _used);
         _bookmarkFiles = PdfSplitter.ByBookmarks(_bookmarks, _used.Count).Count;
         _baseName = PdfSplitter.SafeFileName(entry.Title) is { Length: > 0 } safe ? safe : entry.DefaultTitle;
+        for (int i = 0; i < _used.Count; i++) _positionOf.TryAdd(_used[i], i + 1);
 
         SuspendLayout(); // 表示倍率の調整を ResumeLayout まで待たせる（MainForm と同じ）
         Text = $"{entry.FileName} を分割";
@@ -158,6 +165,8 @@ internal sealed class SplitDialog : Form
             {
                 if (!radio.Checked) return;
                 foreach (var other in modes.Where(m => m != radio)) other.Checked = false;
+                // 範囲がまだ空なら「全部で 1 ファイル」から始める（「ここから分ける」を押すたびに区切りが増える）
+                if (radio == _byRanges && _ranges.Text.Trim().Length == 0) _ranges.Text = $"1-{_used.Count}";
                 UpdatePlan();
             };
         }
@@ -166,7 +175,20 @@ internal sealed class SplitDialog : Form
         _folder.TextChanged += (_, _) => UpdatePlan();
         _browse.Click += (_, _) => ChooseFolder();
         _split.Click += async (_, _) => await SplitAsync();
-        _pieceList.SelectedIndexChanged += (_, _) => ShowSelectedPages();
+        _pieceList.SelectedIndexChanged += (_, _) =>
+        {
+            ShowSelectedPages();
+            // 範囲を指定しているときは全ページが並んでいるので、選んだファイルの先頭ページまで送る
+            if (_byRanges.Checked && !_rebuilding && _pieceList.SelectedIndices.Count > 0
+                && _pieceList.SelectedIndices[0] < _pieces.Count && _pieces[_pieceList.SelectedIndices[0]].Pages.Count > 0)
+            {
+                _pages.ScrollToPage(_pieces[_pieceList.SelectedIndices[0]].Pages[0]);
+            }
+        };
+        _pages.PageLabel = page => _positionOf.TryGetValue(page, out int position) ? $"{position}" : $"{page + 1}";
+        _pages.PageCutToggled += ToggleCut;
+        // 表示倍率の違う画面へ動かすと一覧の文字の大きさが変わる。各行に持たせた文字もそれに合わせて付け直す
+        _pieceList.FontChanged += (_, _) => ShowSelectedPages();
         _pages.PageZoomRequested += page =>
         {
             // 見るだけの拡大表示（ここでは外す・回すはしない）
@@ -249,6 +271,7 @@ internal sealed class SplitDialog : Form
     {
         // 分け方を変えても、同じ位置の行を選んだままにする（ページの表示が先頭へ飛ばないように）
         int keep = _pieceList.SelectedIndices.Count > 0 ? _pieceList.SelectedIndices[0] : 0;
+        _rebuilding = true;
         _pieceList.BeginUpdate();
         _pieceList.Items.Clear();
         var names = _paths.Count == positions.Count ? _paths : PdfSplitter.FileNames(_baseName, positions, "");
@@ -273,7 +296,21 @@ internal sealed class SplitDialog : Form
             selected.EnsureVisible();
         }
         _pieceList.EndUpdate();
+        _rebuilding = false;
         ShowSelectedPages();
+    }
+
+    /// <summary>
+    /// 押されたページから新しいファイルにする（すでに区切りがあれば外す）。範囲の欄を書き直し、そこから一覧とページを更新する。
+    /// 欄の範囲が飛び飛びだったときも、押した時点で「すべてのページを順に分ける」範囲に置き換わる。
+    /// </summary>
+    private void ToggleCut(int page)
+    {
+        if (_running || !_byRanges.Checked || !_positionOf.TryGetValue(page, out int position) || position == 1) return;
+        var starts = _pieces.Where(p => p.Pages.Count > 0 && _positionOf.ContainsKey(p.Pages[0]))
+            .Select(p => _positionOf[p.Pages[0]]).ToHashSet();
+        if (!starts.Remove(position)) starts.Add(position);
+        _ranges.Text = PdfSplitter.RangesFromStarts(starts, _used.Count);
     }
 
     /// <summary>一覧で選んだファイルに入るページを、書き出すときと同じ向きで右側に並べる。</summary>
@@ -292,6 +329,29 @@ internal sealed class SplitDialog : Form
             var font = item.Index == index ? _shownFont : _pieceList.Font;
             if (!ReferenceEquals(item.Font, font)) item.Font = font;
         }
+
+        if (_byRanges.Checked)
+        {
+            // 範囲を指定しているときは、書き出すページをすべて並べ、各ファイルの先頭ページに区切りの印を付ける。
+            // 範囲に入らないページは並べない（書き出されるものだけを見せる）
+            var starts = new Dictionary<int, int>();
+            for (int k = 0; k < _pieces.Count; k++)
+            {
+                if (_pieces[k].Pages.Count > 0) starts.TryAdd(_pieces[k].Pages[0], k + 1);
+            }
+            var covered = _pieces.SelectMany(p => p.Pages).ToHashSet();
+            var written = _used.Where(covered.Contains).ToList();
+            int left = _used.Count - written.Count;
+            _pagesTitle.Text = left > 0
+                ? $"書き出す {written.Count} ページ（範囲に入らない {left} ページは書き出しません）"
+                : $"書き出す {written.Count} ページ";
+            _pages.ShowDocument(_pdf, written, _entry.Rotations, interactive: false,
+                hint: "ページに乗せて「ここから分ける」を押すと、そのページから新しいファイルにします。", shown: written);
+            _pages.SetCuts(true, starts);
+            return;
+        }
+
+        _pages.SetCuts(false, NoStarts);
         if (index < 0 || index >= _pieces.Count)
         {
             _pagesTitle.Text = "";

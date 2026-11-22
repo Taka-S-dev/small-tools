@@ -10,6 +10,24 @@ public sealed class PdfSplitterTests : IDisposable
 
     private static int[][] PagesOf(IReadOnlyList<PdfSplitter.Piece> pieces) => pieces.Select(p => p.Pages.ToArray()).ToArray();
 
+    [Theory]
+    [InlineData(new int[0], 12, "1-12")]
+    [InlineData(new[] { 9, 5 }, 12, "1-4; 5-8; 9-12")]
+    [InlineData(new[] { 1, 3 }, 3, "1-2; 3")]            // 先頭は区切らなくても 1 つ目の始まり。1 ページだけのファイルは「3」
+    [InlineData(new[] { 2, 2, 0, 13 }, 12, "1; 2-12")]   // 重なりと範囲外は無視する
+    public void Ranges_from_cut_points_cover_every_page_in_order(int[] starts, int pages, string expected) =>
+        Assert.Equal(expected, PdfSplitter.RangesFromStarts(starts, pages));
+
+    [Fact]
+    public void Ranges_made_from_cut_points_split_where_the_cuts_are()
+    {
+        string text = PdfSplitter.RangesFromStarts([4, 7], 9);
+
+        var pieces = PdfSplitter.Ranges(PdfSplitter.SplitRangeList(text), 9);
+
+        Assert.Equal([[0, 1, 2], [3, 4, 5], [6, 7, 8]], PagesOf(pieces));
+    }
+
     [Fact]
     public void Every_cuts_into_equal_pieces_and_keeps_the_remainder()
     {

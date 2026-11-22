@@ -22,7 +22,14 @@ internal sealed record MergePart(string PdfPath, string Title, IReadOnlyList<int
     /// </summary>
     public int? OutlineDepth { get; init; }
 
+    /// <summary>
+    /// 元のしおりの手直し。しおりの位置（OutlinePaths.Of で求める "0/2" の形）→ 付け直す名前。
+    /// 名前が null のしおりは、その下のしおりごと付けない。
+    /// </summary>
+    public IReadOnlyDictionary<string, string?> OutlineEdits { get; init; } = NoEdits;
+
     public const int AllLevels = int.MaxValue;
+    public static readonly IReadOnlyDictionary<string, string?> NoEdits = new Dictionary<string, string?>();
 }
 
 internal sealed record MergeOptions(bool PageNumbers, bool TableOfContents, bool DuplexBlanks, string DocumentTitle)
@@ -42,10 +49,17 @@ internal sealed record MergeOptions(bool PageNumbers, bool TableOfContents, bool
 internal enum BookmarkKind { Contents, Folder, File, Original }
 
 /// <summary>結合した PDF に付けるしおり 1 件。Page は結合後のページ（0 始まり）。</summary>
-/// <param name="Part">ファイルのしおりなら、そのファイルの番号（parts の何番目か）。ほかは -1。</param>
+/// <param name="Part">ファイルのしおりと元のしおりなら、そのファイルの番号（parts の何番目か）。ほかは -1。</param>
 /// <param name="FolderKey">フォルダの段なら、そのフォルダの Key。ほかは null。</param>
+/// <param name="OutlinePath">元のしおりなら、元のファイルのしおりの中での位置（MergePart.OutlineEdits の鍵）。ほかは null。</param>
 internal sealed record Bookmark(string Title, int Page, BookmarkKind Kind, IReadOnlyList<Bookmark> Children,
-    int Part = -1, string? FolderKey = null);
+    int Part = -1, string? FolderKey = null, string? OutlinePath = null);
+
+/// <summary>元のしおりの位置の書き方。上から何番目かを段ごとに "/" でつなぐ（"0/2" は 1 番目の下の 3 番目）。</summary>
+internal static class OutlinePaths
+{
+    public static string Of(string parent, int index) => parent.Length == 0 ? $"{index}" : $"{parent}/{index}";
+}
 
 internal static class PdfMerger
 {
@@ -110,7 +124,7 @@ internal static class PdfMerger
 
             var originals = new List<Bookmark>();
             int depth = part.OutlineDepth ?? options.OutlineDepth ?? MergePart.AllLevels;
-            AddOriginal(originals, part.Outline, positions, 1, depth);
+            AddOriginal(originals, part.Outline, positions, 1, depth, part.OutlineEdits, i, "");
             // 段数で削ったあとに、ファイルの先頭を指す 1 件だけが残ったなら、ファイルのしおりと重なるので付けない
             if (options.FileBookmarks && originals is [{ Children.Count: 0 } only] && only.Page == first) originals.Clear();
             if (!options.FileBookmarks)
@@ -151,16 +165,27 @@ internal static class PdfMerger
 
     /// <param name="positions">元のページ番号 → 結合後のページ。結合に含めなかったページは入っていない。</param>
     /// <param name="level">nodes の段（元のしおりの一番上が 1）。maxDepth を超える段は付けない。</param>
+    /// <param name="edits">手直し（MergePart.OutlineEdits）。位置は元のしおりのままで数えるので、段数や外したページに左右されない。</param>
+    /// <param name="parent">nodes の親の位置。一番上なら空。</param>
     private static void AddOriginal(List<Bookmark> target, IReadOnlyList<OutlineNode> nodes, Dictionary<int, int> positions,
-        int level, int maxDepth)
+        int level, int maxDepth, IReadOnlyDictionary<string, string?> edits, int part, string parent)
     {
         if (level > maxDepth) return;
-        foreach (var node in nodes)
+        for (int n = 0; n < nodes.Count; n++)
         {
+            var node = nodes[n];
+            string path = OutlinePaths.Of(parent, n);
+            string title = node.Title;
+            if (edits.TryGetValue(path, out string? edited))
+            {
+                if (edited is null) continue; // 外したしおりは、下のしおりごと付けない
+                title = edited;
+            }
             var children = new List<Bookmark>();
-            AddOriginal(children, node.Children, positions, level + 1, maxDepth);
+            AddOriginal(children, node.Children, positions, level + 1, maxDepth, edits, part, path);
             // 行き先のページが結合に含まれない項目は付けない（子は残せるものだけ同じ階層に付ける）
-            if (positions.TryGetValue(node.PageIndex, out int page)) target.Add(new Bookmark(node.Title, page, BookmarkKind.Original, children));
+            if (positions.TryGetValue(node.PageIndex, out int page))
+                target.Add(new Bookmark(title, page, BookmarkKind.Original, children, part, OutlinePath: path));
             else target.AddRange(children);
         }
     }

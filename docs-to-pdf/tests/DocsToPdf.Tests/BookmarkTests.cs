@@ -118,6 +118,38 @@ public sealed class BookmarkTests : IDisposable
     }
 
     [Fact]
+    public void Bookmarks_rename_and_drop_original_bookmarks_by_their_position()
+    {
+        // 「1.1」の名前を変え、「第2章」を外す
+        var part = Part("資料", 4, Chapters) with
+        {
+            OutlineEdits = new Dictionary<string, string?> { ["0/0"] = "背景", ["1"] = null },
+        };
+        var bookmarks = PdfMerger.Bookmarks([part], MergeOptions.None);
+        Assert.Equal("資料@0[第1章@0[背景@1[1.1.1@1]]]", Show(bookmarks));
+        Assert.Equal("0/0", bookmarks[0].Children[0].Children[0].OutlinePath);
+    }
+
+    [Fact]
+    public void Bookmarks_drop_the_children_of_a_dropped_bookmark_too()
+    {
+        var part = Part("資料", 4, Chapters) with { OutlineEdits = new Dictionary<string, string?> { ["0"] = null } };
+        Assert.Equal("資料@0[第2章@3]", Show(PdfMerger.Bookmarks([part], MergeOptions.None)));
+    }
+
+    [Fact]
+    public void Bookmarks_keep_edits_on_the_same_bookmark_when_pages_or_depth_change()
+    {
+        // 1 ページ目を外して「第1章」が付かなくなっても、「1.1」の手直しは「1.1」に当たる
+        var part = new MergePart("unused.pdf", "資料", [1, 2, 3], Chapters)
+        {
+            OutlineEdits = new Dictionary<string, string?> { ["0/0"] = "背景" },
+        };
+        Assert.Equal("資料@0[背景@0[1.1.1@0] 第2章@2]", Show(PdfMerger.Bookmarks([part], MergeOptions.None)));
+        Assert.Equal("資料@0[背景@0 第2章@2]", Show(PdfMerger.Bookmarks([part], MergeOptions.None with { OutlineDepth = 2 })));
+    }
+
+    [Fact]
     public void Bookmarks_let_a_file_choose_its_own_depth()
     {
         MergePart[] parts =

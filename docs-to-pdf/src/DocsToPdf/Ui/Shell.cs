@@ -6,11 +6,11 @@ using System.Text;
 
 namespace DocsToPdf.Ui;
 
-/// <summary>拡張子ごとの、エクスプローラーと同じ小さいアイコン。</summary>
+/// <summary>拡張子ごとやフォルダの、エクスプローラーと同じ小さいアイコン。</summary>
 internal static class ShellIcons
 {
     private const uint ShgfiIcon = 0x100, ShgfiSmallIcon = 0x1, ShgfiUseFileAttributes = 0x10;
-    private const uint FileAttributeNormal = 0x80;
+    private const uint FileAttributeNormal = 0x80, FileAttributeDirectory = 0x10;
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct ShFileInfo
@@ -29,10 +29,15 @@ internal static class ShellIcons
     private static extern bool DestroyIcon(IntPtr handle);
 
     /// <summary>その拡張子のアイコンを取る。ファイルの実体は見ないので、存在しなくてもよい。</summary>
-    public static Icon? ForExtension(string extension)
+    public static Icon? ForExtension(string extension) => Get("x" + extension, FileAttributeNormal);
+
+    /// <summary>フォルダのアイコンを取る。</summary>
+    public static Icon? ForFolder() => Get("x", FileAttributeDirectory);
+
+    private static Icon? Get(string name, uint attributes)
     {
         var info = new ShFileInfo();
-        var result = SHGetFileInfo("x" + extension, FileAttributeNormal, ref info, (uint)Marshal.SizeOf<ShFileInfo>(),
+        var result = SHGetFileInfo(name, attributes, ref info, (uint)Marshal.SizeOf<ShFileInfo>(),
             ShgfiIcon | ShgfiSmallIcon | ShgfiUseFileAttributes);
         if (result == IntPtr.Zero || info.hIcon == IntPtr.Zero) return null;
         try

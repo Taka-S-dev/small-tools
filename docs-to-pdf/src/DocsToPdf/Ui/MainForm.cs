@@ -68,6 +68,13 @@ internal sealed partial class MainForm : Form
     private readonly CheckBox _optToc = Option("目次ページを付ける");
     private readonly CheckBox _optDuplex = Option("両面印刷用に白紙を挟む");
     private readonly CheckBox _optOpen = Option("作成後に開く");
+    private readonly Button _bookmarks = new() { Text = "しおりを確認...", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
+    /// <summary>元のファイルのしおりを何段まで付けるか。null ならすべて、0 なら付けない。</summary>
+    private int? _outlineDepth;
+    /// <summary>フォルダを入れたときに、しおりをフォルダごとにまとめるか。</summary>
+    private bool _folderBookmarks = true;
+    /// <summary>しおりの確認で付け直したフォルダの段の名前（フォルダのパス → 名前）。開いている間だけ覚える。</summary>
+    private readonly Dictionary<string, string> _folderNames = new(StringComparer.OrdinalIgnoreCase);
 
     private readonly LinkLabel _status = new() { Dock = DockStyle.Fill, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft, LinkArea = new LinkArea(0, 0) };
     private readonly Label _summary = new() { Dock = DockStyle.Fill, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft };
@@ -114,6 +121,12 @@ internal sealed partial class MainForm : Form
         _optToc.Checked = startup.IsBatch ? startup.TableOfContents : _settings.TableOfContents;
         _optDuplex.Checked = startup.IsBatch ? startup.DuplexBlanks : _settings.DuplexBlanks;
         _optOpen.Checked = startup.IsBatch ? startup.Open : _settings.OpenAfterCreate;
+        if (!startup.IsBatch)
+        {
+            _outlineDepth = BookmarkDialog.DepthFrom(_settings.BookmarkDepth);
+            _folderBookmarks = _settings.FolderBookmarks;
+        }
+        ShowBookmarkChoice();
 
         RefreshAll();
         SetStatus("ファイルを追加すると、すぐ裏で PDF に変換します。並べ替えて「結合して PDF を作成」を押してください（結合しないときは「個別に PDF を保存」）。");
@@ -157,7 +170,7 @@ internal sealed partial class MainForm : Form
 
         // オプション
         var options = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(0, 8, 0, 0) };
-        options.Controls.AddRange([_optPageNumbers, _optToc, _optDuplex, _optOpen]);
+        options.Controls.AddRange([_optPageNumbers, _optToc, _optDuplex, _optOpen, _bookmarks]);
 
         // 下の行: ふだんは合計、作成中は進み具合
         // 右の大きいボタンと高さがそろうよう、行の中で上下中央に置く
@@ -211,6 +224,7 @@ internal sealed partial class MainForm : Form
         _toolTip.SetToolTip(_optToc, "先頭に、しおり名とページ番号の一覧を付けます。行を押すとそのページへ飛べます");
         _toolTip.SetToolTip(_optDuplex, "各ファイルが紙の表（奇数ページ）から始まるよう、必要なところに白紙を入れます");
         _toolTip.SetToolTip(_optOpen, "できあがった PDF をすぐに開きます");
+        _toolTip.SetToolTip(_bookmarks, BookmarksTip);
         _toolTip.SetToolTip(_run, "上から順に 1 つの PDF にまとめます（Ctrl+Enter）");
     }
 
@@ -270,6 +284,7 @@ internal sealed partial class MainForm : Form
         _undo.Click += (_, _) => Undo();
         _run.Click += async (_, _) => await CreateAsync(null);
         _runEach.Click += async (_, _) => await SaveEachAsync();
+        _bookmarks.Click += (_, _) => ShowBookmarks();
         _cancel.Click += (_, _) => CancelCreate();
         _emptyHint.Click += (_, _) => ChooseFiles();
         _status.LinkClicked += OnStatusLinkClicked;
@@ -464,6 +479,23 @@ internal sealed partial class MainForm : Form
         _toolTip.SetToolTip(_status, text);
     }
 
+    /// <summary>
+    /// 変換し直してしおりが変わり、元のしおりの手直しを取り消したファイル。次に作成や保存を終えたときに知らせて空にする
+    /// （その時点でも、できた PDF に手直しが入っていない理由になるので）。
+    /// </summary>
+    private readonly List<string> _droppedEdits = [];
+
+    private string DroppedEditsNotice() =>
+        $"「{string.Join("」「", _droppedEdits)}」のしおりが変わったので、元のしおりの手直しを取り消しました。";
+
+    /// <summary>手直しを取り消したことを、作成や保存の知らせの後ろに添える（作成の直前の変換し直しで起きると、知らせが上書きされて見えないので）。</summary>
+    private void AppendDroppedEdits()
+    {
+        if (_droppedEdits.Count == 0) return;
+        _status.Text += "　" + DroppedEditsNotice();
+        _droppedEdits.Clear();
+    }
+
     /// <summary>作成できたことを、開くためのリンク付きで出す。</summary>
     private void SetCreatedStatus(string output, int files, int pages)
     {
@@ -475,6 +507,7 @@ internal sealed partial class MainForm : Form
         _status.Links.Add(head.Length, open.Length, "open");
         _status.Links.Add(head.Length + open.Length + 1, reveal.Length, "reveal");
         _toolTip.SetToolTip(_status, output);
+        AppendDroppedEdits();
     }
 
     /// <summary>複数のファイルを書き出したこと（分割、個別の保存）を、保存先を開くためのリンク付きで出す。</summary>
@@ -488,6 +521,7 @@ internal sealed partial class MainForm : Form
         _status.Text = head + reveal;
         _status.Links.Add(head.Length, reveal.Length, "reveal");
         _toolTip.SetToolTip(_status, Path.GetDirectoryName(files[0]) + "\r\n" + string.Join("\r\n", files.Take(20).Select(Path.GetFileName)));
+        AppendDroppedEdits();
     }
 
     private void OnStatusLinkClicked(object? sender, LinkLabelLinkClickedEventArgs e)
@@ -498,7 +532,74 @@ internal sealed partial class MainForm : Form
     }
 
     private MergeOptions CurrentOptions(string documentTitle) =>
-        new(_optPageNumbers.Checked, _optToc.Checked, _optDuplex.Checked, documentTitle);
+        new(_optPageNumbers.Checked, _optToc.Checked, _optDuplex.Checked, documentTitle) { OutlineDepth = _outlineDepth };
+
+    /// <summary>
+    /// 結合した PDF に付くしおりを見せ、名前と、元のしおりの段数と、フォルダごとにまとめるかを直してもらう。
+    /// 変換中や結合できないファイルは、まだしおりに入れられないので、その件数を添える。
+    /// ファイルの名前と段数は一覧の行に移すので、元に戻す（Ctrl+Z）で戻せる。
+    /// </summary>
+    private void ShowBookmarks()
+    {
+        if (_busy) return;
+        var entries = Entries().ToList();
+        var usable = entries.Where(e => e.IsUsable).ToList();
+        int left = entries.Count - usable.Count;
+        string note = left > 0 ? $"変換中か結合できないファイル（{left} 件）は、まだ入っていません。" : "";
+        var options = CurrentOptions("");
+        // 開いている間に裏の確認で行の変換結果が消えても困らないよう、開いたときの写しから木を作る
+        var parts = usable.Select(PartOf).ToList();
+        var roots = entries.Select(e => e.Root).ToList();
+        using var dialog = new BookmarkDialog(
+            choices => PdfMerger.Bookmarks(ApplyChoices(usable, parts, roots, choices), options with { OutlineDepth = choices.Depth }),
+            CurrentChoices(usable), note);
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+
+        var choices = dialog.Choices;
+        var changed = usable.Select((e, i) => (Entry: e, Title: TitleOf(e, choices.Titles[i]), Depth: choices.FileDepths[i],
+                Edits: choices.OutlineEdits[i], Outline: parts[i].Outline))
+            .Where(c => c.Title != c.Entry.Title || c.Depth != c.Entry.OutlineDepth || !SameEdits(c.Edits, c.Entry.OutlineEdits))
+            .ToList();
+        bool renamedFolders = choices.FolderNames.Count != _folderNames.Count
+            || choices.FolderNames.Any(f => !_folderNames.TryGetValue(f.Key, out var name) || name != f.Value);
+        if (changed.Count == 0 && !renamedFolders && choices.Depth == _outlineDepth && choices.Folders == _folderBookmarks) return;
+
+        PushUndo();
+        foreach (var (entry, title, depth, edits, outline) in changed)
+        {
+            entry.Title = title;
+            entry.OutlineDepth = depth;
+            // 手直しは、ダイアログを開いたときのしおりに結び付ける（開いている間に変換し直されたら当てない）
+            entry.OutlineChanges = edits.Count == 0 ? null : new OutlineChanges(outline, new Dictionary<string, string?>(edits));
+            EntryChanged(entry);
+        }
+        _folderNames.Clear();
+        foreach (var (key, name) in choices.FolderNames) _folderNames[key] = name;
+        _outlineDepth = choices.Depth;
+        _folderBookmarks = choices.Folders;
+        ShowBookmarkChoice();
+    }
+
+    private static bool SameEdits(IReadOnlyDictionary<string, string?> a, IReadOnlyDictionary<string, string?> b) =>
+        a.Count == b.Count && a.All(p => b.TryGetValue(p.Key, out var v) && v == p.Value);
+
+    /// <summary>
+    /// しおりの選び方が既定と違うときは、ボタンにそう書き、中身をヒントに出す（次に開いたときも効いていると分かるように）。
+    /// ファイルごとの段数は一覧に出ないので、指定があることも数える。ボタンの文字は、選び方が増えても長くならないようにする。
+    /// </summary>
+    private void ShowBookmarkChoice()
+    {
+        string choice = BookmarkDialog.Describe(_outlineDepth, _folderBookmarks,
+            Entries().Any(e => e.OutlineDepth is not null || e.OutlineEdits.Count > 0));
+        string text = choice.Length > 0 ? "しおりを確認...（既定から変更あり）" : "しおりを確認...";
+        if (_bookmarks.Text == text && _bookmarkChoice == choice) return;
+        _bookmarks.Text = text;
+        _bookmarkChoice = choice;
+        _toolTip.SetToolTip(_bookmarks, choice.Length > 0 ? $"{BookmarksTip}\n今の選び方: {choice}" : BookmarksTip);
+    }
+
+    private const string BookmarksTip = "結合した PDF に付くしおりを、作る前に確かめて直します。元のしおりを何段まで付けるかや、フォルダごとにまとめるかも選べます";
+    private string _bookmarkChoice = "";
 
     private void UpdateSummary()
     {
@@ -554,6 +655,8 @@ internal sealed partial class MainForm : Form
         _emptyHint.Cursor = idle ? Cursors.Hand : Cursors.Default;
         foreach (var option in new[] { _optPageNumbers, _optToc, _optDuplex, _optOpen })
             option.Enabled = idle;
+        ShowBookmarkChoice(); // 元に戻したり行を消したりすると、ファイルごとの指定も変わる
+        _bookmarks.Enabled = idle && count > 0;
     }
 
     private void ShellOpen(string path)
@@ -652,6 +755,8 @@ internal sealed partial class MainForm : Form
             _settings.TableOfContents = _optToc.Checked;
             _settings.DuplexBlanks = _optDuplex.Checked;
             _settings.OpenAfterCreate = _optOpen.Checked;
+            _settings.BookmarkDepth = _outlineDepth ?? -1;
+            _settings.FolderBookmarks = _folderBookmarks;
             _settings.Save();
         }
         base.OnFormClosing(e);

@@ -10,6 +10,21 @@ internal sealed record SheetInfo(string Name, int Pages, bool Included);
 /// <summary>しおり 1 件。PageIndex はその PDF の中での 0 始まりのページ位置。</summary>
 internal sealed record OutlineNode(string Title, int PageIndex, IReadOnlyList<OutlineNode> Children);
 
+/// <summary>
+/// 元のしおりの手直し（MergePart.OutlineEdits）と、手直ししたときの元のしおり。
+/// 位置で手直しを当てるので、変換し直してしおりが変わったら当てない（別の見出しに当たってしまう）。
+/// </summary>
+internal sealed record OutlineChanges(IReadOnlyList<OutlineNode> Outline, IReadOnlyDictionary<string, string?> Edits)
+{
+    /// <summary>outline が、手直ししたときのしおりと同じ（名前とページと並びが同じ）か。</summary>
+    public bool AppliesTo(IReadOnlyList<OutlineNode> outline) => Same(Outline, outline);
+
+    private static bool Same(IReadOnlyList<OutlineNode> a, IReadOnlyList<OutlineNode> b) =>
+        ReferenceEquals(a, b)
+        || (a.Count == b.Count && a.Zip(b).All(p => p.First.Title == p.Second.Title && p.First.PageIndex == p.Second.PageIndex
+            && Same(p.First.Children, p.Second.Children)));
+}
+
 /// <summary>画面に表示したときのページの大きさ（ポイント。回転を反映済み）。</summary>
 internal readonly record struct PageSize(double Width, double Height);
 
@@ -104,6 +119,14 @@ internal sealed class FileEntry
     // ── 利用者が決めるもの ──
     /// <summary>しおりと目次に出す名前。</summary>
     public string Title { get; set; }
+    /// <summary>このファイルだけ、元のしおりを何段まで付けるか（MergePart.OutlineDepth と同じ意味）。null なら全体に合わせる。</summary>
+    public int? OutlineDepth { get; set; }
+    /// <summary>元のしおりの手直し。null ならなし。</summary>
+    public OutlineChanges? OutlineChanges { get; set; }
+
+    /// <summary>今の変換結果に当てられる、元のしおりの手直し。</summary>
+    public IReadOnlyDictionary<string, string?> OutlineEdits =>
+        OutlineChanges is { } changes && Converted is { } pdf && changes.AppliesTo(pdf.Outline) ? changes.Edits : MergePart.NoEdits;
     /// <summary>使うページの指定（"1-3,5"）。空ならすべて。</summary>
     public string PageRange { get; set; } = "";
     /// <summary>出力する Excel のシート名。null ならすべて。</summary>

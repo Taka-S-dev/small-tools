@@ -14,6 +14,10 @@ internal sealed class AppSettings
     public bool TableOfContents { get; set; }
     public bool DuplexBlanks { get; set; }
     public bool OpenAfterCreate { get; set; } = true;
+    /// <summary>元のファイルのしおりを何段まで付けるか。-1 ならすべて、0 なら付けない。</summary>
+    public int BookmarkDepth { get; set; } = -1;
+    /// <summary>フォルダを入れたときに、しおりをフォルダごとにまとめるか。</summary>
+    public bool FolderBookmarks { get; set; } = true;
     /// <summary>「個別に PDF を保存」で、前回それぞれ元のファイルと同じフォルダに保存したか（次回の既定にする）。</summary>
     public bool SaveEachBesideSource { get; set; } = true;
     /// <summary>画面の色: "System"（Windows の設定に合わせる）/ "Light" / "Dark"。</summary>

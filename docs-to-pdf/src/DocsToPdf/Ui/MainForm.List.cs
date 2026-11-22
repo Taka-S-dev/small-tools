@@ -11,10 +11,13 @@ internal sealed partial class MainForm
 
     /// <summary>元に戻すための、ある時点の一覧の写し。並び順と、利用者が決めた値を持つ。</summary>
     private sealed record Snapshot(FileEntry Entry, string Title, string PageRange, IReadOnlyList<string>? Sheets, bool FitWidth,
-        IReadOnlyDictionary<int, int> Rotations);
+        IReadOnlyDictionary<int, int> Rotations, int? OutlineDepth, OutlineChanges? OutlineChanges);
 
-    private readonly List<Snapshot[]> _undoStack = [];
-    private readonly List<Snapshot[]> _redoStack = [];
+    /// <summary>元に戻す 1 回分。行の写しと、しおりの確認で決めたもの（フォルダの段の名前、全体の段数、フォルダごとにまとめるか）。</summary>
+    private sealed record ListState(Snapshot[] Rows, IReadOnlyDictionary<string, string> FolderNames, int? OutlineDepth, bool FolderBookmarks);
+
+    private readonly List<ListState> _undoStack = [];
+    private readonly List<ListState> _redoStack = [];
     private TextBox? _editor;
 
     private IEnumerable<ListViewItem> Items => _list.Items.Cast<ListViewItem>();
@@ -160,7 +163,7 @@ internal sealed partial class MainForm
         {
             if (!known.Add(file)) { duplicates++; continue; }
             FileEntry.TryGetKind(file, out var kind);
-            added.Add(new FileEntry(file, kind));
+            added.Add(new FileEntry(file, kind) { Root = result.RootOf(file) });
         }
 
         if (added.Count > 0)
@@ -259,6 +262,13 @@ internal sealed partial class MainForm
             entry.Converted = pdf;
             entry.State = EntryState.Ready;
             entry.Error = null;
+            // 元のファイルが変わってしおりが変わったら、位置で当てている手直しは別の見出しに当たるので捨てる
+            if (entry.OutlineChanges is { } changes && !changes.AppliesTo(pdf.Outline))
+            {
+                entry.OutlineChanges = null;
+                _droppedEdits.Add(entry.FileName);
+                SetStatus(DroppedEditsNotice());
+            }
         }
         else
         {
@@ -435,8 +445,9 @@ internal sealed partial class MainForm
         SetStatus("ファイル名の順に並べました。");
     }
 
-    private Snapshot[] TakeSnapshot() =>
-        Entries().Select(e => new Snapshot(e, e.Title, e.PageRange, e.Sheets, e.FitWidth, e.Rotations)).ToArray();
+    private ListState TakeSnapshot() =>
+        new(Entries().Select(e => new Snapshot(e, e.Title, e.PageRange, e.Sheets, e.FitWidth, e.Rotations, e.OutlineDepth, e.OutlineChanges)).ToArray(),
+            new Dictionary<string, string>(_folderNames, StringComparer.OrdinalIgnoreCase), _outlineDepth, _folderBookmarks);
 
     /// <summary>一覧を変える操作の直前に呼ぶ。</summary>
     private void PushUndo()
@@ -450,7 +461,7 @@ internal sealed partial class MainForm
 
     private void Redo() => Step(_redoStack, _undoStack, "やり直しました。");
 
-    private void Step(List<Snapshot[]> from, List<Snapshot[]> to, string message)
+    private void Step(List<ListState> from, List<ListState> to, string message)
     {
         if (_busy || from.Count == 0) return;
         EndEdit(commit: false);
@@ -461,8 +472,13 @@ internal sealed partial class MainForm
         SetStatus(message);
     }
 
-    private void Restore(Snapshot[] snapshot)
+    private void Restore(ListState state)
     {
+        _folderNames.Clear();
+        foreach (var (key, name) in state.FolderNames) _folderNames[key] = name;
+        _outlineDepth = state.OutlineDepth;
+        _folderBookmarks = state.FolderBookmarks;
+        var snapshot = state.Rows;
         var selected = SelectedEntries().ToHashSet();
         var kept = snapshot.Select(s => s.Entry).ToHashSet();
         foreach (var entry in Entries().Where(e => !kept.Contains(e)))
@@ -479,6 +495,8 @@ internal sealed partial class MainForm
             entry.Sheets = saved.Sheets;
             entry.FitWidth = saved.FitWidth;
             entry.Rotations = saved.Rotations;
+            entry.OutlineDepth = saved.OutlineDepth;
+            entry.OutlineChanges = saved.OutlineChanges;
 
             var item = CreateItem(entry);
             _list.Items.Add(item);

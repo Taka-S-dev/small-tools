@@ -45,7 +45,7 @@ internal sealed partial class MainForm
         }
 
         SetStatus("PDF を結合しています...");
-        var parts = usable.Select(PartOf).ToList();
+        var parts = PartsOf(usable, CurrentChoices(usable));
         var options = CurrentOptions(Path.GetFileNameWithoutExtension(output));
         int pages = await Task.Run(() => PdfMerger.Merge(parts, options, output, StartProgress(parts.Count), ct), ct);
 
@@ -96,12 +96,13 @@ internal sealed partial class MainForm
         SetStatus("PDF を保存しています...");
         var parts = usable.Select(PartOf).ToList();
         bool pageNumbers = _optPageNumbers.Checked;
+        int? depth = _outlineDepth;
         var progress = StartProgress(parts.Count);
         await Task.Run(() =>
         {
             for (int i = 0; i < parts.Count; i++)
             {
-                IndividualPdf.Write(parts[i], names[i], pageNumbers, ct);
+                IndividualPdf.Write(parts[i], names[i], pageNumbers, ct, depth);
                 ((IProgress<int>)progress).Report(i + 1);
             }
         }, ct);
@@ -113,8 +114,50 @@ internal sealed partial class MainForm
         return true;
     });
 
+    /// <summary>今の一覧と設定でのしおりの選び方（ファイルの番号は entries の並び）。</summary>
+    private BookmarkChoices CurrentChoices(IReadOnlyList<FileEntry> entries)
+    {
+        var choices = new BookmarkChoices
+        {
+            Depth = _outlineDepth,
+            Folders = _folderBookmarks,
+            FolderNames = new(_folderNames, StringComparer.OrdinalIgnoreCase),
+        };
+        for (int i = 0; i < entries.Count; i++)
+        {
+            choices.Titles[i] = entries[i].Title;
+            choices.FileDepths[i] = entries[i].OutlineDepth;
+            choices.OutlineEdits[i] = new(entries[i].OutlineEdits);
+        }
+        return choices;
+    }
+
+    /// <summary>結合する行を、しおりの選び方（名前・段数・フォルダの段）を当てて並べる。</summary>
+    private List<MergePart> PartsOf(IReadOnlyList<FileEntry> entries, BookmarkChoices choices) =>
+        ApplyChoices(entries, entries.Select(PartOf).ToList(), Entries().Select(e => e.Root).ToList(), choices);
+
+    /// <param name="parts">entries を PartOf にしたもの（しおりの確認では、開いたときの写しを使い回す）。</param>
+    /// <param name="allRoots">一覧全体の行のフォルダ（入れたフォルダが 1 つだけかを、変換中の行も含めて決める）。</param>
+    private static List<MergePart> ApplyChoices(IReadOnlyList<FileEntry> entries, IReadOnlyList<MergePart> parts,
+        IReadOnlyList<string?> allRoots, BookmarkChoices choices)
+    {
+        var groups = choices.Folders
+            ? BookmarkFolders.Of(entries.Select(e => e.Path).ToList(), entries.Select(e => e.Root).ToList(), allRoots)
+            : null;
+        return entries.Select((e, i) => parts[i] with
+        {
+            Title = TitleOf(e, choices.Titles.GetValueOrDefault(i, e.Title)),
+            OutlineDepth = choices.FileDepths.GetValueOrDefault(i, e.OutlineDepth),
+            OutlineEdits = choices.OutlineEdits.TryGetValue(i, out var edits) ? edits : parts[i].OutlineEdits,
+            Folders = groups?[i].Select(f => choices.FolderNames.TryGetValue(f.Key, out var name) ? f with { Name = name } : f).ToList() ?? [],
+        }).ToList();
+    }
+
+    /// <summary>空の名前は、元のファイル名に戻す（一覧で名前を消したときと同じ）。</summary>
+    private static string TitleOf(FileEntry e, string title) => title.Trim() is { Length: > 0 } t ? t : e.DefaultTitle;
+
     private static MergePart PartOf(FileEntry e) =>
-        new(e.Converted!.PdfPath, e.Title, e.SelectedPages, e.Converted.Outline, e.Rotations);
+        new(e.Converted!.PdfPath, e.Title, e.SelectedPages, e.Converted.Outline, e.Rotations) { OutlineDepth = e.OutlineDepth, OutlineEdits = e.OutlineEdits };
 
     /// <summary>進み具合のバーを 0 から始め、1 件終わるごとに進める報告先を返す。</summary>
     private Progress<int> StartProgress(int total)

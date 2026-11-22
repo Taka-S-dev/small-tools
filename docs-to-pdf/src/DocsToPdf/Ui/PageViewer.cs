@@ -15,12 +15,12 @@ internal sealed class PageViewer : Form
     private readonly PdfPageRenderer _renderer = new();
     private readonly System.Windows.Forms.Timer _settle = new() { Interval = 150 };
 
-    private readonly Button _prev = new() { Text = "◀ 前へ", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(6, 2, 6, 2), Margin = new Padding(0, 0,4, 0) };
-    private readonly Button _next = new() { Text = "次へ ▶", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(6, 2, 6, 2), Margin = new Padding(0, 0,12, 0) };
+    private readonly Button _prev = new() { Text = "◀ 前へ", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(6, 2, 6, 2), Margin = new Padding(0, 0, 4, 0) };
+    private readonly Button _next = new() { Text = "次へ ▶", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(6, 2, 6, 2), Margin = new Padding(0, 0, 12, 0) };
     private readonly Label _position = new() { AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 0, 16, 0) };
     private readonly CheckBox _include = new() { Text = "このページを結合する", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 0, 16, 0) };
-    private readonly Button _rotateLeft = new() { Text = "左に回転", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(6, 2, 6, 2), Margin = new Padding(0, 0,4, 0) };
-    private readonly Button _rotateRight = new() { Text = "右に回転", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(6, 2, 6, 2), Margin = new Padding(0, 0,12, 0) };
+    private readonly Button _rotateLeft = new() { Text = "左に回転", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(6, 2, 6, 2), Margin = new Padding(0, 0, 4, 0) };
+    private readonly Button _rotateRight = new() { Text = "右に回転", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(6, 2, 6, 2), Margin = new Padding(0, 0, 12, 0) };
     private readonly Label _keys = new() { AutoSize = true, Anchor = AnchorStyles.Left, ForeColor = SystemColors.GrayText };
     private readonly DoubleBufferedPanel _canvas = new() { Dock = DockStyle.Fill, BackColor = Theme.ViewerBack };
 

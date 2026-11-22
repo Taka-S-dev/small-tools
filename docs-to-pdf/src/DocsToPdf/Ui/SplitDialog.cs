@@ -86,7 +86,8 @@ internal sealed class SplitDialog : Form
         _pieceList.Columns.Add("書き出すファイル");
         _pieceList.Columns.Add("ページ");
         _pieceList.Columns.Add("枚数", -2, HorizontalAlignment.Right);
-        _pieceList.Resize += (_, _) => FitColumns();
+        // 最大化から元に戻すときなどは、外側の配置が何段階かで決まる。途中の大きさで合わせると広いまま残る（横のスクロールバーが出る）ので、配置が落ち着いてから合わせる
+        _pieceList.Resize += (_, _) => { if (IsHandleCreated) BeginInvoke(FitColumns); else FitColumns(); };
 
         var everyRow = Row(_byEvery, _every, _everyUnit);
         var rangesRow = new TableLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, ColumnCount = 2, Margin = Padding.Empty };

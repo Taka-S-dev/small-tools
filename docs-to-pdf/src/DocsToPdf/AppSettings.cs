@@ -13,6 +13,7 @@ internal sealed class AppSettings
     public bool PageNumbers { get; set; }
     public bool TableOfContents { get; set; }
     public bool DuplexBlanks { get; set; }
+    public bool Dividers { get; set; }
     public bool OpenAfterCreate { get; set; } = true;
     /// <summary>元のファイルのしおりを何段まで付けるか。-1 ならすべて、0 なら付けない。</summary>
     public int BookmarkDepth { get; set; } = -1;

@@ -206,6 +206,10 @@ internal static class Program
         var toc = new Option<bool>("--toc") { Description = "先頭に目次ページを付ける（行を押すとそのページへ飛ぶ）" };
         var numbers = new Option<bool>("--page-numbers") { Description = "各ページの下に「3 / 25」の形で通し番号を入れる" };
         var duplex = new Option<bool>("--duplex") { Description = "各ファイルが奇数ページから始まるよう、白紙を挟む（両面印刷用）" };
+        var dividers = new Option<bool>("--dividers")
+        {
+            Description = "しおりの一番上の段（フォルダごとにまとめていればフォルダ、なければファイル）ごとに、名前だけのページ（中表紙）を前に入れる",
+        };
         var title = new Option<string?>("--title") { Description = "PDF の文書のタイトル（既定は出力のファイル名）", HelpName = "題名" };
         var open = new Option<bool>("--open") { Description = "作ったあと、既定のアプリで開く" };
         var allowNetwork = new Option<bool>("--allow-network")
@@ -220,13 +224,14 @@ internal static class Program
 
         var command = new Command("merge", "ファイルを PDF にして、ファイルごとのしおりを付けて 1 つに結合する")
         {
-            inputs, output, toc, numbers, duplex, title, BookmarkDepth, flat, allowNetwork, open, Force, Timeout, Quiet,
+            inputs, output, toc, numbers, dividers, duplex, title, BookmarkDepth, flat, allowNetwork, open, Force, Timeout, Quiet,
         };
         command.SetAction((result, ct) => MergeAsync(
             result.GetValue(inputs)!, result.GetValue(output)!,
             new MergeOptions(result.GetValue(numbers), result.GetValue(toc), result.GetValue(duplex), result.GetValue(title) ?? "")
             {
                 OutlineDepth = result.GetValue(BookmarkDepth),
+                Dividers = result.GetValue(dividers),
             },
             !result.GetValue(flat), result.GetValue(open), result.GetValue(Force), result.GetValue(allowNetwork), result.GetValue(Timeout),
             new Log(result.GetValue(Quiet)), ct));
@@ -334,6 +339,7 @@ internal static class Program
             PageNumbers = composition.PageNumbers || options.PageNumbers,
             TableOfContents = composition.TableOfContents || options.TableOfContents,
             DuplexBlanks = composition.DuplexBlanks || options.DuplexBlanks,
+            Dividers = composition.Dividers || options.Dividers,
             OutlineDepth = options.OutlineDepth ?? composition.OutlineDepth,
         };
 

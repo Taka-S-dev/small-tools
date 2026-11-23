@@ -54,6 +54,21 @@ internal sealed record MergeOptions(bool PageNumbers, bool TableOfContents, bool
 
     /// <summary>元のファイルのしおり（Word の見出しなど）を何段まで付けるか。null ならすべて、0 なら付けない。</summary>
     public int? OutlineDepth { get; init; }
+
+    /// <summary>
+    /// しおりの一番上の段（フォルダごとにまとめていればそのフォルダ、なければファイル）ごとに、名前だけのページ（中表紙）を前に入れる。
+    /// </summary>
+    public bool Dividers { get; init; }
+}
+
+/// <summary>結合したときのページの割り当て。ページは 0 始まり。</summary>
+/// <param name="Starts">各ファイルの最初のページ。</param>
+/// <param name="BlankBefore">各ファイルの直前に、両面印刷用の白紙を入れるか。</param>
+/// <param name="Dividers">各ファイルの前に入れる中表紙のページ。入れなければ -1。</param>
+/// <param name="BlankPages">両面印刷用の白紙の数（中表紙の前後のものも含む）。</param>
+internal sealed record MergePlan(int TotalPages, int[] Starts, bool[] BlankBefore, int[] Dividers, int BlankPages)
+{
+    public int DividerCount => Dividers.Count(d => d >= 0);
 }
 
 internal enum BookmarkKind { Contents, Folder, File, Original, Added }
@@ -102,26 +117,68 @@ internal static class PdfMerger
     /// <summary>目次を付けたときの目次のページ数。</summary>
     public static int TocPageCount(int partCount) => (partCount + TocRowsPerPage - 1) / TocRowsPerPage;
 
+    /// <summary>結合する parts のページの割り当て（中表紙を入れる位置も parts から決める）。</summary>
+    public static MergePlan Plan(IReadOnlyList<MergePart> parts, MergeOptions options) =>
+        Plan(parts.Select(p => p.Pages.Count).ToList(), options, DividerTitles(parts, options).Select(t => t is not null).ToList());
+
     /// <summary>
     /// 結合後の総ページ数と、各ファイルの開始ページ（0 始まり）を求める。
     /// 両面印刷用の白紙は、各ファイルが奇数ページ（紙の表）から始まるように前へ挟む。
+    /// 中表紙も紙の表に置き、その裏は白紙にする（続くファイルが表から始まるように）。
     /// </summary>
-    public static (int TotalPages, int[] Starts, bool[] BlankBefore) Plan(IReadOnlyList<int> pageCounts, MergeOptions options)
+    /// <param name="dividerBefore">各ファイルの前に中表紙を入れるか。null ならどこにも入れない。</param>
+    public static MergePlan Plan(IReadOnlyList<int> pageCounts, MergeOptions options, IReadOnlyList<bool>? dividerBefore = null)
     {
         var starts = new int[pageCounts.Count];
         var blankBefore = new bool[pageCounts.Count];
+        var dividers = new int[pageCounts.Count];
+        int blanks = 0;
         int cursor = options.TableOfContents ? TocPageCount(pageCounts.Count) : 0;
         for (int i = 0; i < pageCounts.Count; i++)
         {
+            dividers[i] = -1;
+            if (dividerBefore?[i] == true)
+            {
+                if (options.DuplexBlanks && cursor % 2 == 1)
+                {
+                    blanks++;
+                    cursor++;
+                }
+                dividers[i] = cursor++;
+            }
             if (options.DuplexBlanks && cursor % 2 == 1)
             {
                 blankBefore[i] = true;
+                blanks++;
                 cursor++;
             }
             starts[i] = cursor;
             cursor += pageCounts[i];
         }
-        return (cursor, starts, blankBefore);
+        return new MergePlan(cursor, starts, blankBefore, dividers, blanks);
+    }
+
+    /// <summary>
+    /// 各ファイルの前に入れる中表紙の名前。入れないところは null。
+    /// しおりの一番上の段が変わるところに入れる。フォルダごとにまとめていれば一番上のフォルダの名前、
+    /// フォルダに入っていないファイルなら、ファイルごとにそのしおり名。使うページのないファイルは飛ばす。
+    /// </summary>
+    public static IReadOnlyList<string?> DividerTitles(IReadOnlyList<MergePart> parts, MergeOptions options)
+    {
+        var titles = new string?[parts.Count];
+        if (!options.Dividers) return titles;
+        string? previous = null;
+        for (int i = 0; i < parts.Count; i++)
+        {
+            var part = parts[i];
+            if (part.Pages.Count == 0) continue;
+            var (key, title) = options.FileBookmarks && part.Folders is [var top, ..]
+                ? ("folder:" + top.Key, top.Name)
+                : ($"file:{i}", part.Title);
+            if (!string.Equals(key, previous, StringComparison.OrdinalIgnoreCase)) titles[i] = title;
+            previous = key;
+        }
+        return titles;
     }
 
     /// <summary>
@@ -133,12 +190,14 @@ internal static class PdfMerger
     /// </summary>
     public static IReadOnlyList<Bookmark> Bookmarks(IReadOnlyList<MergePart> parts, MergeOptions options)
     {
-        var (_, starts, _) = Plan(parts.Select(p => p.Pages.Count).ToList(), options);
-        return Bookmarks(parts, options, (i, k) => starts[i] + k);
+        var plan = Plan(parts, options);
+        return Bookmarks(parts, options, (i, k) => plan.Starts[i] + k, plan.Dividers);
     }
 
     /// <param name="pageAt">(ファイルの番号, そのファイルで使うページの何枚目) → 結合後のページ。結合に入らなければ null。</param>
-    private static IReadOnlyList<Bookmark> Bookmarks(IReadOnlyList<MergePart> parts, MergeOptions options, Func<int, int, int?> pageAt)
+    /// <param name="dividers">各ファイルの前の中表紙のページ（なければ -1）。一番上のフォルダの段は中表紙を指す。</param>
+    private static IReadOnlyList<Bookmark> Bookmarks(IReadOnlyList<MergePart> parts, MergeOptions options, Func<int, int, int?> pageAt,
+        IReadOnlyList<int> dividers)
     {
         var top = new List<Bookmark>();
         if (options.TableOfContents && TocPageCount(parts.Count) > 0)
@@ -178,7 +237,9 @@ internal static class PdfMerger
             {
                 var folder = part.Folders[d];
                 var children = new List<Bookmark>();
-                (d == 0 ? top : open[d - 1].Children).Add(new Bookmark(folder.Name, first, BookmarkKind.Folder, children, FolderKey: folder.Key));
+                // ファイルのしおりは中身の最初のページを指したままにする（しおりの確認で、ページの並びをファイルのしおりから数えるため）
+                int page = d == 0 && dividers[i] >= 0 ? dividers[i] : first;
+                (d == 0 ? top : open[d - 1].Children).Add(new Bookmark(folder.Name, page, BookmarkKind.Folder, children, FolderKey: folder.Key));
                 open.Add((folder.Key, children));
             }
             int firstSource = positions.First(p => p.Value == first).Key;
@@ -303,7 +364,8 @@ internal static class PdfMerger
         output.Info.Title = options.DocumentTitle;
         output.Info.Creator = "Docs to PDF";
 
-        var (_, starts, blankBefore) = Plan(parts.Select(p => p.Pages.Count).ToList(), options);
+        var plan = Plan(parts, options);
+        var dividerTitles = DividerTitles(parts, options);
 
         var tocPages = new List<PdfPage>();
         if (options.TableOfContents)
@@ -314,19 +376,28 @@ internal static class PdfMerger
         // ファイルごとの「使うページの何枚目 → 結合後のページ」。しおりは、全部のページを足してから付ける
         var placed = new List<int?[]>();
 
-        var blanks = new HashSet<PdfPage>();
+        // ページ番号を入れないページ（白紙と中表紙）
+        var unnumbered = new HashSet<PdfPage>();
         for (int i = 0; i < parts.Count; i++)
         {
             ct.ThrowIfCancellationRequested();
             var part = parts[i];
             using var input = PdfReader.Open(part.PdfPath, PdfDocumentOpenMode.Import);
 
-            if (blankBefore[i] && part.Pages.Count > 0)
+            if (part.Pages.Count > 0 && (plan.BlankBefore[i] || plan.Dividers[i] >= 0))
             {
-                // 白紙は、続くページを回したあとの向きにそろえる
+                // 白紙と中表紙は、続くページを回したあとの向きにそろえる
                 var size = PdfInfo.Read(input).Sizes[part.Pages[0]];
                 bool sideways = part.TurnOf(part.Pages[0]) is 90 or 270;
-                blanks.Add(sideways ? AddBlank(output, size.Height, size.Width) : AddBlank(output, size.Width, size.Height));
+                double width = sideways ? size.Height : size.Width, height = sideways ? size.Width : size.Height;
+                if (plan.Dividers[i] >= 0)
+                {
+                    while (output.PageCount < plan.Dividers[i]) unnumbered.Add(AddBlank(output, width, height));
+                    var divider = AddBlank(output, width, height);
+                    DrawDivider(divider, dividerTitles[i] ?? "");
+                    unnumbered.Add(divider);
+                }
+                if (plan.BlankBefore[i]) unnumbered.Add(AddBlank(output, width, height));
             }
 
             var at = new int?[part.Pages.Count];
@@ -343,12 +414,33 @@ internal static class PdfMerger
             progress?.Report(i + 1);
         }
 
-        AddBookmarks(output.Outlines, Bookmarks(parts, options, (i, k) => placed[i][k]), output);
+        AddBookmarks(output.Outlines, Bookmarks(parts, options, (i, k) => placed[i][k], plan.Dividers), output);
 
         if (options.TableOfContents)
-            DrawToc(output, tocPages, parts, starts);
+            DrawToc(output, tocPages, parts, plan.Starts);
         if (options.PageNumbers)
-            DrawPageNumbers(output, blanks);
+            DrawPageNumbers(output, unnumbered);
+    }
+
+    /// <summary>中表紙に名前を描く。ページの中ほどより少し上に、収まる大きさで中央にそろえる。</summary>
+    private static void DrawDivider(PdfPage page, string title)
+    {
+        PdfFonts.EnsureRegistered();
+        using var g = XGraphics.FromPdfPage(page);
+        double width = page.Width.Point, height = page.Height.Point;
+        double maxWidth = width - TocMargin * 2;
+        double size = 28;
+        var font = new XFont(PdfFonts.Family, size);
+        while (size > 14 && g.MeasureString(title, font).Width > maxWidth)
+        {
+            size -= 1;
+            font = new XFont(PdfFonts.Family, size);
+        }
+        string text = Fit(g, font, title, maxWidth);
+        double y = height * 0.42;
+        g.DrawString(text, font, XBrushes.Black, new XRect(TocMargin, y - size, maxWidth, size * 2), XStringFormats.Center);
+        double line = Math.Min(maxWidth, Math.Max(80, g.MeasureString(text, font).Width));
+        g.DrawLine(new XPen(XColor.FromArgb(120, 120, 120), 0.8), (width - line) / 2, y + size, (width + line) / 2, y + size);
     }
 
     /// <summary>
@@ -360,10 +452,10 @@ internal static class PdfMerger
     {
         int count = TocPageCount(parts.Count);
         if (count == 0) return 0;
-        var (_, starts, _) = Plan(parts.Select(p => p.Pages.Count).ToList(), options with { TableOfContents = true });
+        var plan = Plan(parts, options with { TableOfContents = true });
         using var output = new PdfDocument();
         var pages = Enumerable.Range(0, count).Select(_ => AddBlank(output, A4Width, A4Height)).ToList();
-        DrawToc(output, pages, parts, starts, links: false);
+        DrawToc(output, pages, parts, plan.Starts, links: false);
         output.Save(outputPath);
         return count;
     }
@@ -437,7 +529,7 @@ internal static class PdfMerger
         return text[..length] + "…";
     }
 
-    private static void DrawPageNumbers(PdfDocument output, HashSet<PdfPage> blanks)
+    private static void DrawPageNumbers(PdfDocument output, HashSet<PdfPage> unnumbered)
     {
         PdfFonts.EnsureRegistered();
         var font = new XFont(PdfFonts.Family, 9);
@@ -447,7 +539,7 @@ internal static class PdfMerger
         for (int i = 0; i < total; i++)
         {
             var page = output.Pages[i];
-            if (blanks.Contains(page)) continue;
+            if (unnumbered.Contains(page)) continue;
             using var g = OpenUpright(page, out double width, out double height);
             g.DrawString($"{i + 1} / {total}", font, brush, new XRect(0, height - 28, width, 12), XStringFormats.Center);
         }

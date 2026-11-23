@@ -27,7 +27,10 @@ public class CompositionTests
             new CompositionItem(b, null, "b"),
         ],
         PageNumbers: true, TableOfContents: false, DuplexBlanks: true, OutlineDepth: 1, FolderBookmarks: false,
-        new Dictionary<string, string> { [root] = "資料" });
+        new Dictionary<string, string> { [root] = "資料" })
+    {
+        Dividers = true,
+    };
 
     [Fact]
     public void Save_then_Load_keeps_every_choice()
@@ -46,6 +49,7 @@ public class CompositionTests
         Assert.True(loaded.DuplexBlanks);
         Assert.Equal(1, loaded.OutlineDepth);
         Assert.False(loaded.FolderBookmarks);
+        Assert.True(loaded.Dividers);
         Assert.Equal("資料", loaded.FolderNames[root]);
         Assert.Equal(2, loaded.Items.Count);
 

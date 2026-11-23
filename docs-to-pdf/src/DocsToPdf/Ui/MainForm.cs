@@ -68,6 +68,7 @@ internal sealed partial class MainForm : Form
 
     private readonly CheckBox _optPageNumbers = Option("ページ番号を入れる");
     private readonly CheckBox _optToc = Option("目次ページを付ける");
+    private readonly CheckBox _optDividers = Option("中表紙を入れる");
     private readonly CheckBox _optDuplex = Option("両面印刷用に白紙を挟む");
     private readonly CheckBox _optOpen = Option("作成後に開く");
     private readonly Button _bookmarks = new() { Text = "しおりを確認...", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
@@ -121,6 +122,7 @@ internal sealed partial class MainForm : Form
 
         _optPageNumbers.Checked = startup.IsBatch ? startup.PageNumbers : _settings.PageNumbers;
         _optToc.Checked = startup.IsBatch ? startup.TableOfContents : _settings.TableOfContents;
+        _optDividers.Checked = startup.IsBatch ? startup.Dividers : _settings.Dividers;
         _optDuplex.Checked = startup.IsBatch ? startup.DuplexBlanks : _settings.DuplexBlanks;
         _optOpen.Checked = startup.IsBatch ? startup.Open : _settings.OpenAfterCreate;
         if (!startup.IsBatch)
@@ -172,7 +174,7 @@ internal sealed partial class MainForm : Form
 
         // オプション
         var options = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(0, 8, 0, 0) };
-        options.Controls.AddRange([_optPageNumbers, _optToc, _optDuplex, _optOpen, _bookmarks]);
+        options.Controls.AddRange([_optPageNumbers, _optToc, _optDividers, _optDuplex, _optOpen, _bookmarks]);
 
         // 下の行: ふだんは合計、作成中は進み具合
         // 右の大きいボタンと高さがそろうよう、行の中で上下中央に置く
@@ -227,6 +229,8 @@ internal sealed partial class MainForm : Form
         _toolTip.SetToolTip(_optPageNumbers, "各ページの下に「3 / 25」の形で通し番号を入れます。\n元のファイルにページ番号があると、二重になります");
         _toolTip.SetToolTip(_optToc, "先頭に、しおり名とページ番号の一覧を付けます。行を押すとそのページへ飛べます。\n"
             + "目次ページの入った PDF（このツールで目次付きで作ったものなど）を結合すると、目次が二重になります");
+        _toolTip.SetToolTip(_optDividers, "しおりの一番上の段ごとに、その名前だけのページを前に入れます。\n"
+            + "フォルダごとにまとめていればフォルダごと、そうでなければファイルごとに入ります。中表紙にはページ番号を入れません");
         _toolTip.SetToolTip(_optDuplex, "各ファイルが紙の表（奇数ページ）から始まるよう、必要なところに白紙を入れます");
         _toolTip.SetToolTip(_optOpen, "できあがった PDF をすぐに開きます");
         _toolTip.SetToolTip(_bookmarks, BookmarksTip);
@@ -296,7 +300,7 @@ internal sealed partial class MainForm : Form
         _emptyHint.Click += (_, _) => ChooseFiles();
         _status.LinkClicked += OnStatusLinkClicked;
 
-        foreach (var option in new[] { _optPageNumbers, _optToc, _optDuplex })
+        foreach (var option in new[] { _optPageNumbers, _optToc, _optDividers, _optDuplex })
             option.CheckedChanged += (_, _) => UpdateSummary();
 
         _list.SelectedIndexChanged += (_, _) => OnSelectionChanged();
@@ -550,7 +554,7 @@ internal sealed partial class MainForm : Form
     }
 
     private MergeOptions CurrentOptions(string documentTitle) =>
-        new(_optPageNumbers.Checked, _optToc.Checked, _optDuplex.Checked, documentTitle) { OutlineDepth = _outlineDepth };
+        new(_optPageNumbers.Checked, _optToc.Checked, _optDuplex.Checked, documentTitle) { OutlineDepth = _outlineDepth, Dividers = _optDividers.Checked };
 
     /// <summary>
     /// 結合した PDF に付くしおりを見せ、名前・段・足したしおり・元のしおりの段数・フォルダごとにまとめるかを直してもらう。
@@ -664,9 +668,11 @@ internal sealed partial class MainForm : Form
         int busy = entries.Count(e => e.IsBusy);
         int failed = entries.Count - usable.Count - busy;
         var options = CurrentOptions("");
-        var (total, _, blankBefore) = PdfMerger.Plan(usable.Select(e => e.SelectedPages.Count).ToList(), options);
+        // 中表紙の位置はフォルダの段としおり名で決まるので、結合と同じ形にしてから数える
+        var plan = PdfMerger.Plan(options.Dividers ? PartsOf(usable, CurrentChoices(usable)) : usable.Select(PartOf).ToList(), options);
+        int total = plan.TotalPages;
         int toc = options.TableOfContents && usable.Count > 0 ? PdfMerger.TocPageCount(usable.Count) : 0;
-        int blanks = blankBefore.Count(b => b);
+        int blanks = plan.BlankPages;
 
         var parts = new List<string> { $"{entries.Count} ファイル" };
         if (usable.Count > 0)
@@ -674,6 +680,7 @@ internal sealed partial class MainForm : Form
             // 足されるページがあるときだけ、その内訳を添える
             var added = new List<string>();
             if (toc > 0) added.Add($"目次 {toc}");
+            if (plan.DividerCount > 0) added.Add($"中表紙 {plan.DividerCount}");
             if (blanks > 0) added.Add($"白紙 {blanks}");
             parts.Add(added.Count == 0 ? $"{total} ページ" : $"仕上がり {total} ページ（{string.Join("・", added)} を含む）");
         }
@@ -705,7 +712,7 @@ internal sealed partial class MainForm : Form
         _runEach.Enabled = _run.Enabled;
         _cancel.Enabled = (_busy && _cts is { IsCancellationRequested: false }) || IsScanning;
         _emptyHint.Cursor = idle ? Cursors.Hand : Cursors.Default;
-        foreach (var option in new[] { _optPageNumbers, _optToc, _optDuplex, _optOpen })
+        foreach (var option in new[] { _optPageNumbers, _optToc, _optDividers, _optDuplex, _optOpen })
             option.Enabled = idle;
         ShowBookmarkChoice(); // 元に戻したり行を消したりすると、ファイルごとの指定も変わる
         _bookmarks.Enabled = idle && count > 0;
@@ -806,6 +813,7 @@ internal sealed partial class MainForm : Form
             _settings.PageNumbers = _optPageNumbers.Checked;
             _settings.TableOfContents = _optToc.Checked;
             _settings.DuplexBlanks = _optDuplex.Checked;
+            _settings.Dividers = _optDividers.Checked;
             _settings.OpenAfterCreate = _optOpen.Checked;
             _settings.BookmarkDepth = _outlineDepth ?? -1;
             _settings.FolderBookmarks = _folderBookmarks;

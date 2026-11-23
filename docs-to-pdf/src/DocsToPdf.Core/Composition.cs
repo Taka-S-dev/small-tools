@@ -60,6 +60,9 @@ internal sealed record Composition(
 {
     public const string Extension = ".docstopdf";
 
+    /// <summary>しおりの一番上の段ごとに中表紙を入れるか（MergeOptions.Dividers）。</summary>
+    public bool Dividers { get; init; }
+
     public static bool IsCompositionFile(string path) =>
         string.Equals(System.IO.Path.GetExtension(path), Extension, StringComparison.OrdinalIgnoreCase);
 
@@ -75,7 +78,7 @@ internal sealed record Composition(
     }
 
     public MergeOptions MergeOptions(string documentTitle) =>
-        new(PageNumbers, TableOfContents, DuplexBlanks, documentTitle) { OutlineDepth = OutlineDepth };
+        new(PageNumbers, TableOfContents, DuplexBlanks, documentTitle) { OutlineDepth = OutlineDepth, Dividers = Dividers };
 }
 
 /// <summary>
@@ -109,6 +112,7 @@ internal static class CompositionFile
             PageNumbers = composition.PageNumbers,
             TableOfContents = composition.TableOfContents,
             DuplexBlanks = composition.DuplexBlanks,
+            Dividers = composition.Dividers ? true : null,
             BookmarkDepth = composition.OutlineDepth,
             FolderBookmarks = composition.FolderBookmarks,
             FolderNames = composition.FolderNames.Count == 0 ? null
@@ -214,7 +218,10 @@ internal static class CompositionFile
                 if (f.Folder is not null && f.Name is not null) folderNames[f.Folder.Resolve(baseDir, expectFile: false)] = f.Name;
 
             return new Composition(items, dto.PageNumbers, dto.TableOfContents, dto.DuplexBlanks,
-                dto.BookmarkDepth is < 0 ? null : dto.BookmarkDepth, dto.FolderBookmarks, folderNames);
+                dto.BookmarkDepth is < 0 ? null : dto.BookmarkDepth, dto.FolderBookmarks, folderNames)
+            {
+                Dividers = dto.Dividers == true,
+            };
         }
         catch (ArgumentException ex)
         {
@@ -231,6 +238,7 @@ internal static class CompositionFile
         public bool PageNumbers { get; set; }
         public bool TableOfContents { get; set; }
         public bool DuplexBlanks { get; set; }
+        public bool? Dividers { get; set; }
         public int? BookmarkDepth { get; set; }
         public bool FolderBookmarks { get; set; } = true;
         public List<FolderNameDto>? FolderNames { get; set; }

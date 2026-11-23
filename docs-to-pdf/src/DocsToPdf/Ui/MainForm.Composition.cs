@@ -38,7 +38,10 @@ internal sealed partial class MainForm
 
         var composition = new Composition(entries.Select(CompositionItem.Of).ToList(),
             _optPageNumbers.Checked, _optToc.Checked, _optDuplex.Checked, _outlineDepth, _folderBookmarks,
-            new Dictionary<string, string>(_folderNames, StringComparer.OrdinalIgnoreCase));
+            new Dictionary<string, string>(_folderNames, StringComparer.OrdinalIgnoreCase))
+        {
+            Dividers = _optDividers.Checked,
+        };
         try
         {
             CompositionFile.Save(dialog.FileName, composition);
@@ -149,6 +152,7 @@ internal sealed partial class MainForm
         _optPageNumbers.Checked = composition.PageNumbers || (_startup.IsBatch && _startup.PageNumbers);
         _optToc.Checked = composition.TableOfContents || (_startup.IsBatch && _startup.TableOfContents);
         _optDuplex.Checked = composition.DuplexBlanks || (_startup.IsBatch && _startup.DuplexBlanks);
+        _optDividers.Checked = composition.Dividers || (_startup.IsBatch && _startup.Dividers);
         _outlineDepth = composition.OutlineDepth;
         _folderBookmarks = composition.FolderBookmarks;
         _folderNames.Clear();

@@ -23,7 +23,7 @@ public sealed class PdfMergerTests : IDisposable
     [Fact]
     public void Plan_places_files_one_after_another()
     {
-        var (total, starts, blanks) = PdfMerger.Plan([2, 3, 1], MergeOptions.None);
+        var (total, starts, blanks, _, _) = PdfMerger.Plan([2, 3, 1], MergeOptions.None);
         Assert.Equal(new[] { 0, 2, 5 }, starts);
         Assert.DoesNotContain(true, blanks);
         Assert.Equal(6, total);
@@ -32,7 +32,7 @@ public sealed class PdfMergerTests : IDisposable
     [Fact]
     public void Plan_puts_the_table_of_contents_first()
     {
-        var (total, starts, _) = PdfMerger.Plan([2, 1], MergeOptions.None with { TableOfContents = true });
+        var (total, starts, _, _, _) = PdfMerger.Plan([2, 1], MergeOptions.None with { TableOfContents = true });
         Assert.Equal(new[] { 1, 3 }, starts);
         Assert.Equal(4, total);
     }
@@ -40,7 +40,7 @@ public sealed class PdfMergerTests : IDisposable
     [Fact]
     public void Plan_adds_blanks_so_each_file_starts_on_an_odd_page()
     {
-        var (total, starts, blanks) = PdfMerger.Plan([3, 2, 1], MergeOptions.None with { DuplexBlanks = true });
+        var (total, starts, blanks, _, _) = PdfMerger.Plan([3, 2, 1], MergeOptions.None with { DuplexBlanks = true });
         Assert.Equal(new[] { 0, 4, 6 }, starts);
         Assert.Equal(new[] { false, true, false }, blanks);
         Assert.Equal(7, total);
@@ -120,7 +120,7 @@ public sealed class PdfMergerTests : IDisposable
 
         int pages = PdfMerger.Merge(parts, options, output, ct: Ct);
 
-        var (total, _, _) = PdfMerger.Plan(parts.Select(p => p.Pages.Count).ToList(), options);
+        int total = PdfMerger.Plan(parts, options).TotalPages;
         Assert.Equal(total, pages);
         var outline = PdfInfo.Read(output).Outline;
         Assert.Equal(new[] { "目次", "一", "二" }, Titles(outline));

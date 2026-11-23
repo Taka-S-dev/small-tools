@@ -39,10 +39,16 @@ public class PageRangeTests
 
     [Theory]
     [InlineData("")]
+    [InlineData("  ")]
+    public void Resolve_uses_every_page_when_empty(string input) =>
+        Assert.Equal([0, 1, 2], PageRange.Resolve(input, 3));
+
+    [Theory]
     [InlineData("3-1")]
     [InlineData("abc")]
-    public void Resolve_uses_every_page_when_empty_or_invalid(string input) =>
-        Assert.Equal([0, 1, 2], PageRange.Resolve(input, 3));
+    [InlineData("1--3")]
+    public void Resolve_returns_no_page_for_an_unreadable_range(string input) =>
+        Assert.Empty(PageRange.Resolve(input, 3)); // 確かめ忘れても、全ページを出してしまわない
 
     [Fact]
     public void Resolve_returns_nothing_when_all_pages_are_out_of_range() =>

@@ -75,12 +75,16 @@ internal static class PageRange
     private static bool TryNumber(string text, out int value) =>
         int.TryParse(text, System.Globalization.NumberStyles.None, null, out value) && value >= 1;
 
-    /// <summary>使うページを 0 始まりの番号で返す。指定が空か読めなければすべて、範囲外の番号は無視する。</summary>
+    /// <summary>
+    /// 使うページを 0 始まりの番号で返す。指定が空ならすべて、範囲外の番号は無視する。
+    /// 読めない指定（「3-1」など）は、ページなしにする。すべてにすると、呼ぶ側が IsValid で確かめ忘れたとき、
+    /// 一部のつもりの指定で全ページを出してしまうため（ページなしなら「指定したページがありません」で止まる）。
+    /// </summary>
     public static IReadOnlyList<int> Resolve(string text, int pageCount)
     {
         string normalized = Normalize(text);
-        if (normalized.Length == 0 || !TryParse(normalized, out var ranges))
-            return Enumerable.Range(0, pageCount).ToArray();
+        if (normalized.Length == 0) return Enumerable.Range(0, pageCount).ToArray();
+        if (!TryParse(normalized, out var ranges)) return [];
 
         var included = new bool[pageCount];
         foreach (var (from, to) in ranges)

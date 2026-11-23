@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <!--
-    変換・結合・分割の本体。画面（DocsToPdf）とコマンドライン（docs2pdf）の両方から使う。
+    変換・結合・分割の本体。画面（DocsToPdf）とコマンドライン（DocsToPdfCli）の両方から使う。
     Office の COM 操作と、画像の読み込み（System.Drawing）に Windows の機能を使う。
   -->
   <PropertyGroup>
@@ -18,7 +18,7 @@
   <ItemGroup>
     <!-- 中の型は外へ公開する API ではないので internal のまま、使う側にだけ見せる -->
     <InternalsVisibleTo Include="DocsToPdf" />
-    <InternalsVisibleTo Include="docs2pdf" />
+    <InternalsVisibleTo Include="DocsToPdfCli" />
     <InternalsVisibleTo Include="DocsToPdf.Tests" />
   </ItemGroup>
 

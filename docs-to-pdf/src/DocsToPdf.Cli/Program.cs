@@ -63,7 +63,7 @@ internal static class Program
         if (parsed.Errors.Count > 0)
         {
             foreach (var error in parsed.Errors) Console.Error.WriteLine($"エラー: {error.Message}");
-            Console.Error.WriteLine("使い方は docs2pdf --help で確認できます。");
+            Console.Error.WriteLine("使い方は DocsToPdfCli --help で確認できます。");
             code = ExitCodes.Usage;
         }
         else
@@ -116,7 +116,7 @@ internal static class Program
     }
 
     /// <summary>
-    /// サブコマンドなし: ファイルごとに PDF にする（docs2pdf 報告.docx → 報告.pdf）。
+    /// サブコマンドなし: ファイルごとに PDF にする（DocsToPdfCli 報告.docx → 報告.pdf）。
     /// 結合は merge、分割は split、ページの抜き出しは extract。
     /// </summary>
     private static RootCommand BuildRoot()
@@ -146,7 +146,7 @@ internal static class Program
     {
         if (inputs.Length == 0)
         {
-            log.Error("PDF にするファイルかフォルダを指定してください。使い方は docs2pdf --help で確認できます。");
+            log.Error("PDF にするファイルかフォルダを指定してください。使い方は DocsToPdfCli --help で確認できます。");
             return ExitCodes.Usage;
         }
 

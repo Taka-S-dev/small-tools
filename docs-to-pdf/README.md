@@ -2,7 +2,7 @@
 
 Word・Excel・PowerPoint・PDF・画像をまとめて、しおり付きの 1 つの PDF にする Windows 用ツール。
 結合せずにファイルごとに PDF にすることも、PDF を章やページで分けることもできる。
-画面から使う `DocsToPdf.exe` と、スクリプトや「送る」メニューから使う `docs2pdf.exe` がある。
+画面から使う `DocsToPdf.exe` と、スクリプトや「送る」メニューから使う `DocsToPdfCli.exe` がある。
 
 変換は Microsoft Office（Word・Excel・PowerPoint）本体に任せるため、見た目は Office で「PDF として保存」したときと同じになる。
 このツールは Microsoft とは関係がない。Microsoft、Word、Excel、PowerPoint は Microsoft の商標。
@@ -28,7 +28,7 @@ Word・Excel・PowerPoint・PDF・画像をまとめて、しおり付きの 1 �
 | ウィンドウにドロップ | 行の間に落とすと、その位置に入る。フォルダはサブフォルダの中も含めて追加。大きなフォルダは画面を止めずに裏で探し、「中止」か Esc で止められる。200 件を超えて見つかったときは、すべて加えてよいかを確かめる |
 | 「ファイルを追加...」/ Ctrl+O | |
 | Ctrl+V | エクスプローラーでコピーしたファイルを貼り付け |
-| exe のアイコンにドロップ、「送る」メニュー | `shell:sendto` に exe のショートカットを置く。起動済みならそのウィンドウに追加される（並べ替えずにすぐ PDF にするなら、`docs2pdf.exe` を「送る」に置く。[下記](#ファイルごとに-pdf-にする)） |
+| exe のアイコンにドロップ、「送る」メニュー | `shell:sendto` に exe のショートカットを置く。起動済みならそのウィンドウに追加される（並べ替えずにすぐ PDF にするなら、`DocsToPdfCli.exe` を「送る」に置く。[下記](#ファイルごとに-pdf-にする)） |
 
 対応する形式: `.doc .docx .docm .rtf` / `.xls .xlsx .xlsm .xlsb` / `.ppt .pptx .pptm .pps .ppsx` / `.pdf` / `.jpg .jpeg .png .bmp .gif .tif .tiff`
 
@@ -92,17 +92,17 @@ Word・Excel・PowerPoint・PDF・画像をまとめて、しおり付きの 1 �
 一覧で同じフォルダのファイルが続いていれば 1 つの段にまとめ、間に別のフォルダのファイルを挟むと段が分かれる。
 フォルダの中身が同じ名前のファイル 1 つだけなら（`見積/見積.xlsx`）、段を作らずファイルのしおりだけを置く。名前が違えば（`第3回/議事録.docx`）、ほかの回と見分けられるよう段を残す。
 
-## コマンドラインから使う（docs2pdf.exe）
+## コマンドラインから使う（DocsToPdfCli.exe）
 
-バッチファイル、PowerShell、タスクスケジューラー、エクスプローラーの「送る」メニューからは `docs2pdf.exe` を使う。
+バッチファイル、PowerShell、タスクスケジューラー、エクスプローラーの「送る」メニューからは `DocsToPdfCli.exe` を使う。
 画面を出さず、終わるまで待ち、結果を終了コードで返す。
-進み具合とエラーは標準エラーに、できたファイルのパスは標準出力に出す。`docs2pdf --help`、`docs2pdf merge --help` で使い方が出る。
+進み具合とエラーは標準エラーに、できたファイルのパスは標準出力に出す。`DocsToPdfCli --help`、`DocsToPdfCli merge --help` で使い方が出る。
 
 ### ファイルごとに PDF にする
 
 ```
-docs2pdf 見積書.docx 請求書.xlsx          見積書.pdf と 請求書.pdf を、それぞれ同じフォルダに作る
-docs2pdf 資料フォルダ -o PDF             フォルダの中をサブフォルダも含めて PDF にし、PDF フォルダに書く
+DocsToPdfCli 見積書.docx 請求書.xlsx          見積書.pdf と 請求書.pdf を、それぞれ同じフォルダに作る
+DocsToPdfCli 資料フォルダ -o PDF             フォルダの中をサブフォルダも含めて PDF にし、PDF フォルダに書く
 ```
 
 サブコマンドを付けないと、ファイルごとに「元のファイル名.pdf」を作る。`-o` を省くと、それぞれのファイルと同じフォルダに書く。
@@ -112,7 +112,7 @@ docs2pdf 資料フォルダ -o PDF             フォルダの中をサブフォ
 PDF にできないファイルがあっても、ほかのファイルは書き出し、最後に失敗（終了コード 1）にする。
 
 エクスプローラーの「送る」メニューに登録すると、選んだファイルを右クリックからすぐ PDF にできる。
-`Win+R` で `shell:sendto` を開き、`docs2pdf.exe` のショートカットを置く（名前は「PDF にする」など、メニューに出したい言葉にする）。
+`Win+R` で `shell:sendto` を開き、`DocsToPdfCli.exe` のショートカットを置く（名前は「PDF にする」など、メニューに出したい言葉にする）。
 このように開いた画面では、「2/5 件完了　変換中: 請求書.xlsx」のように 1 行で進み具合を書き換えて見せ、
 終わったら 3 秒後（エラーがあったときは 10 秒後）に自動で閉じる。キーを押すとすぐ閉じる。
 cmd や PowerShell から実行したときは、その画面を閉じない。出力をファイルなどへ流しているときは、書き換えずに 1 行ずつ出す。
@@ -120,7 +120,7 @@ cmd や PowerShell から実行したときは、その画面を閉じない。�
 ### 結合
 
 ```
-docs2pdf merge 表紙.docx 資料フォルダ 付録.pdf -o まとめ.pdf --toc --page-numbers
+DocsToPdfCli merge 表紙.docx 資料フォルダ 付録.pdf -o まとめ.pdf --toc --page-numbers
 ```
 
 | 指定 | 内容 |
@@ -138,9 +138,9 @@ docs2pdf merge 表紙.docx 資料フォルダ 付録.pdf -o まとめ.pdf --toc 
 ### 分割
 
 ```
-docs2pdf split 報告書.pdf --every 10           10 ページごと
-docs2pdf split 報告書.pdf --pages 1-3 --pages 4-   範囲ごと（指定した数だけファイルを作る）
-docs2pdf split 報告書.docx --bookmarks -o 章ごと     先頭の階層のしおり（Word なら見出し）ごと
+DocsToPdfCli split 報告書.pdf --every 10           10 ページごと
+DocsToPdfCli split 報告書.pdf --pages 1-3 --pages 4-   範囲ごと（指定した数だけファイルを作る）
+DocsToPdfCli split 報告書.docx --bookmarks -o 章ごと     先頭の階層のしおり（Word なら見出し）ごと
 ```
 
 `報告書_01.pdf`、`報告書_02_第1章 はじめに.pdf` のような名前で書き出す。`-o` を省くと入力と同じフォルダに書く。
@@ -149,8 +149,8 @@ Word・Excel・PowerPoint・画像も、PDF にしてから分ける。各ファ
 ### ページを抜き出す
 
 ```
-docs2pdf extract 報告書.pdf --pages 1-3 10-12          報告書_1-3,10-12.pdf を同じフォルダに作る
-docs2pdf extract 報告書.docx --pages 5 8- -o 抜粋.pdf   Word も PDF にしてから抜き出す
+DocsToPdfCli extract 報告書.pdf --pages 1-3 10-12          報告書_1-3,10-12.pdf を同じフォルダに作る
+DocsToPdfCli extract 報告書.docx --pages 5 8- -o 抜粋.pdf   Word も PDF にしてから抜き出す
 ```
 
 選んだページだけを 1 つの PDF にする（画面の「ページを選んで保存」と同じ）。範囲は空白かカンマで区切って並べる。
@@ -172,7 +172,7 @@ docs2pdf extract 報告書.docx --pages 5 8- -o 抜粋.pdf   Word も PDF にし
 | 130 | Ctrl+C で中止した |
 
 画面版の `DocsToPdf.exe` も `--out` を付けると画面を操作せずに結合できるが、
-画面のあるアプリなので cmd や PowerShell は終わりを待たない。スクリプトからは `docs2pdf.exe` を使う。
+画面のあるアプリなので cmd や PowerShell は終わりを待たない。スクリプトからは `DocsToPdfCli.exe` を使う。
 
 画面版は、ファイルを入れたあとに開く画面を指定して起動することもできる。
 変換が終わるのを待って、渡した最初のファイルの画面を開く。すでに起動していれば、そのウィンドウで開く。
@@ -209,7 +209,7 @@ dotnet publish src/DocsToPdf -c Release -r win-x64 --self-contained false -p:Pub
 dotnet publish src/DocsToPdf.Cli -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o publish
 ```
 
-`publish\DocsToPdf.exe`（画面版）と `publish\docs2pdf.exe`（コマンドライン版）が、それぞれ 1 ファイルでできる。
+`publish\DocsToPdf.exe`（画面版）と `publish\DocsToPdfCli.exe`（コマンドライン版）が、それぞれ 1 ファイルでできる。
 実行には .NET 10 デスクトップ ランタイムが必要。
 Release ビルドにはデバッグ情報を付けず、ビルドした PC のフォルダのパスも埋め込まない。
 
@@ -230,7 +230,7 @@ Office での変換は、実際の Office がないと確かめられないた�
 | `src/DocsToPdf.Core/ImagePdf.cs` | 画像から PDF を作る |
 | `src/DocsToPdf.Core/PageRange.cs` | 「1-3,5」のようなページ指定 |
 | `src/DocsToPdf.Core/InputFiles.cs` | 渡されたファイルとフォルダから、扱えるファイルを集める |
-| `src/DocsToPdf.Cli` | コマンドライン版（`docs2pdf.exe`） |
+| `src/DocsToPdf.Cli` | コマンドライン版（`DocsToPdfCli.exe`） |
 | `src/DocsToPdf/Ui/MainForm*.cs` | 画面。一覧の操作は `MainForm.List.cs`、作成は `MainForm.Create.cs` |
 | `src/DocsToPdf/Ui/PreviewPane.cs` | プレビュー（Windows の PDF 描画機能を使う） |
 | `src/DocsToPdf/Ui/PageViewer.cs` | 1 ページを大きく見るウィンドウ |

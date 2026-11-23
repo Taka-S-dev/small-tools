@@ -1,14 +1,14 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <!--
-    コマンドラインから使う版（docs2pdf.exe）。画面を出さず、終わるまで待ち、結果を終了コードで返す。
+    コマンドラインから使う版（DocsToPdfCli.exe）。画面を出さず、終わるまで待ち、結果を終了コードで返す。
     バッチファイル、PowerShell、タスクスケジューラーから使う。
   -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <!-- Windows 10 の新しい API（画面版のプレビューで使う）は要らないので、その対応部品（約 25MB）を含めない -->
     <TargetFramework>net10.0-windows</TargetFramework>
-    <AssemblyName>docs2pdf</AssemblyName>
+    <AssemblyName>DocsToPdfCli</AssemblyName>
     <RootNamespace>DocsToPdf.Cli</RootNamespace>
     <Product>Docs to PDF</Product>
     <Version>2.0.0</Version>

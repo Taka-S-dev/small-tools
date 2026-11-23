@@ -28,11 +28,18 @@ internal sealed record MergePart(string PdfPath, string Title, IReadOnlyList<int
     /// </summary>
     public IReadOnlyDictionary<string, string?> OutlineEdits { get; init; } = NoEdits;
 
-    /// <summary>ページを見て足したしおり。元のしおりと同じ段（一番上）にページ順で入れる。段数の指定では削らない。</summary>
+    /// <summary>ページを見て足したしおり。元のしおりの間にページ順で入れる（段は AddedBookmark.Level）。段数の指定では削らない。</summary>
     public IReadOnlyList<AddedBookmark> Added { get; init; } = [];
+
+    /// <summary>
+    /// 元のしおりの段の付け直し。しおりの位置 → ファイルのしおりの下での段（1 が一番上）。
+    /// 付け直さなかった下のしおりは、親に付いて動く。
+    /// </summary>
+    public IReadOnlyDictionary<string, int> OutlineLevels { get; init; } = NoLevels;
 
     public const int AllLevels = int.MaxValue;
     public static readonly IReadOnlyDictionary<string, string?> NoEdits = new Dictionary<string, string?>();
+    public static readonly IReadOnlyDictionary<string, int> NoLevels = new Dictionary<string, int>();
 }
 
 internal sealed record MergeOptions(bool PageNumbers, bool TableOfContents, bool DuplexBlanks, string DocumentTitle)
@@ -147,12 +154,14 @@ internal static class PdfMerger
             if (positions.Count == 0) continue;
             int first = positions.Values.Min();
 
-            var originals = new List<Bookmark>();
+            // 元のしおりと足したしおりを、上から順の一覧（段付き）にしてから、段で木に組み直す
+            var flat = new List<FlatBookmark>();
             int depth = part.OutlineDepth ?? options.OutlineDepth ?? MergePart.AllLevels;
-            AddOriginal(originals, part.Outline, positions, 1, depth, part.OutlineEdits, i, "");
+            CollectOriginal(flat, part.Outline, positions, 1, 1, depth, part, "");
             // 段数で削ったあとに、ファイルの先頭を指す 1 件だけが残ったなら、ファイルのしおりと重なるので付けない
-            if (options.FileBookmarks && originals is [{ Children.Count: 0 } only] && only.Page == first) originals.Clear();
-            AddAdded(originals, part.Added, positions, i);
+            if (options.FileBookmarks && flat is [var only] && only.Page == first) flat.Clear();
+            InsertAdded(flat, part.Added, positions);
+            var originals = Nest(flat, i);
             if (!options.FileBookmarks)
             {
                 top.AddRange(originals);
@@ -190,27 +199,16 @@ internal static class PdfMerger
                 : node with { Children = children };
         }).ToList();
 
-    /// <summary>
-    /// 足したしおりを、一番上の段にページ順で入れる。同じページに元のしおりがあれば、その後ろに置く。
-    /// 結合に含めないページのしおりは付けない。
-    /// </summary>
-    private static void AddAdded(List<Bookmark> target, IReadOnlyList<AddedBookmark> added, Dictionary<int, int> positions, int part)
-    {
-        for (int k = 0; k < added.Count; k++)
-        {
-            if (!positions.TryGetValue(added[k].Page, out int page)) continue;
-            int at = target.FindIndex(b => b.Page > page);
-            target.Insert(at < 0 ? target.Count : at,
-                new Bookmark(added[k].Title, page, BookmarkKind.Added, [], part, AddedIndex: k, SourcePage: added[k].Page));
-        }
-    }
+    /// <summary>組み立ての途中の、上から順の一覧の 1 件。Level はファイルのしおりの下での段（1 が一番上）。</summary>
+    private sealed record FlatBookmark(string Title, int Page, int Level, BookmarkKind Kind, string? Path, int AddedIndex, int SourcePage);
 
+    /// <summary>元のしおりを、上から順に段付きで一覧へ入れる。</summary>
     /// <param name="positions">元のページ番号 → 結合後のページ。結合に含めなかったページは入っていない。</param>
-    /// <param name="level">nodes の段（元のしおりの一番上が 1）。maxDepth を超える段は付けない。</param>
-    /// <param name="edits">手直し（MergePart.OutlineEdits）。位置は元のしおりのままで数えるので、段数や外したページに左右されない。</param>
+    /// <param name="level">nodes の元の段（一番上が 1）。maxDepth を超える段は付けない（段数は元の段で数える）。</param>
+    /// <param name="placed">nodes を置く段。段を付け直したしおりの下や、外したページのしおりの下では、元の段と違う。</param>
     /// <param name="parent">nodes の親の位置。一番上なら空。</param>
-    private static void AddOriginal(List<Bookmark> target, IReadOnlyList<OutlineNode> nodes, Dictionary<int, int> positions,
-        int level, int maxDepth, IReadOnlyDictionary<string, string?> edits, int part, string parent)
+    private static void CollectOriginal(List<FlatBookmark> flat, IReadOnlyList<OutlineNode> nodes, Dictionary<int, int> positions,
+        int level, int placed, int maxDepth, MergePart part, string parent)
     {
         if (level > maxDepth) return;
         for (int n = 0; n < nodes.Count; n++)
@@ -218,18 +216,55 @@ internal static class PdfMerger
             var node = nodes[n];
             string path = OutlinePaths.Of(parent, n);
             string title = node.Title;
-            if (edits.TryGetValue(path, out string? edited))
+            if (part.OutlineEdits.TryGetValue(path, out string? edited))
             {
                 if (edited is null) continue; // 外したしおりは、下のしおりごと付けない
                 title = edited;
             }
-            var children = new List<Bookmark>();
-            AddOriginal(children, node.Children, positions, level + 1, maxDepth, edits, part, path);
-            // 行き先のページが結合に含まれない項目は付けない（子は残せるものだけ同じ階層に付ける）
             if (positions.TryGetValue(node.PageIndex, out int page))
-                target.Add(new Bookmark(title, page, BookmarkKind.Original, children, part, OutlinePath: path, SourcePage: node.PageIndex));
-            else target.AddRange(children);
+            {
+                int at = part.OutlineLevels.TryGetValue(path, out int set) ? set : placed;
+                flat.Add(new FlatBookmark(title, page, at, BookmarkKind.Original, path, -1, node.PageIndex));
+                CollectOriginal(flat, node.Children, positions, level + 1, at + 1, maxDepth, part, path);
+            }
+            else
+            {
+                // 行き先のページが結合に含まれない項目は付けない。下のしおりは、その項目の段へ持ち上げる
+                CollectOriginal(flat, node.Children, positions, level + 1, placed, maxDepth, part, path);
+            }
         }
+    }
+
+    /// <summary>
+    /// 足したしおりを、一覧のページ順の位置に入れる。同じページのしおりがあれば、その後ろに置く。
+    /// 結合に含めないページのしおりは付けない。
+    /// </summary>
+    private static void InsertAdded(List<FlatBookmark> flat, IReadOnlyList<AddedBookmark> added, Dictionary<int, int> positions)
+    {
+        for (int k = 0; k < added.Count; k++)
+        {
+            if (!positions.TryGetValue(added[k].Page, out int page)) continue;
+            int at = flat.FindIndex(f => f.Page > page);
+            flat.Insert(at < 0 ? flat.Count : at,
+                new FlatBookmark(added[k].Title, page, added[k].Level, BookmarkKind.Added, null, k, added[k].Page));
+        }
+    }
+
+    /// <summary>上から順の一覧を、段で木に組む。前のしおりより 2 段以上深い段は、1 段深いところにそろえる。</summary>
+    private static List<Bookmark> Nest(List<FlatBookmark> flat, int part)
+    {
+        var roots = new List<Bookmark>();
+        var open = new List<List<Bookmark>> { roots }; // open[d] は、段 d + 1 のしおりを入れる先
+        foreach (var f in flat)
+        {
+            int level = Math.Clamp(f.Level, 1, open.Count);
+            open.RemoveRange(level, open.Count - level);
+            var children = new List<Bookmark>();
+            open[level - 1].Add(new Bookmark(f.Title, f.Page, f.Kind, children, part,
+                OutlinePath: f.Path, AddedIndex: f.AddedIndex, SourcePage: f.SourcePage));
+            open.Add(children);
+        }
+        return roots;
     }
 
     /// <summary>

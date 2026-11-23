@@ -29,6 +29,13 @@ internal sealed class BookmarkChoices
     /// <summary>そのファイルの手直しを書き込む先（なければ作る）。</summary>
     public Dictionary<string, string?> EditsOf(int part) =>
         OutlineEdits.TryGetValue(part, out var edits) ? edits : OutlineEdits[part] = [];
+
+    /// <summary>ファイルの番号 → 元のしおりの段の付け直し（MergePart.OutlineLevels と同じ意味）。</summary>
+    public Dictionary<int, Dictionary<string, int>> OutlineLevels { get; } = [];
+
+    /// <summary>そのファイルの段の付け直しを書き込む先（なければ作る）。</summary>
+    public Dictionary<string, int> LevelsOf(int part) =>
+        OutlineLevels.TryGetValue(part, out var levels) ? levels : OutlineLevels[part] = [];
 }
 
 /// <summary>しおりの確認で右に並べる、1 ファイルのページ。Pages は結合に使うページ（元のファイルでの番号）。</summary>
@@ -37,7 +44,7 @@ internal sealed record BookmarkPages(ConvertedPdf Pdf, IReadOnlyList<int> Pages,
 /// <summary>
 /// 結合した PDF に付くしおりを、作る前に木の形で見せる。右には、木で選んだファイルのページが並び、
 /// ページを右クリックするとそのページにしおりを足せる（足したしおりはすぐ木に出て、そのまま名前を書ける）。
-/// ファイル・フォルダ・しおりの名前はその場で変えられ、しおりは 1 件ずつ外せる。
+/// ファイル・フォルダ・しおりの名前はその場で変えられ、しおりは段を上げ下げしたり外したりできる（Ctrl / Shift でまとめて選べる）。
 /// 元のしおりを何段まで付けるかは、全体とファイルごとに選べる。変えるたびに木を作り直す（結合と同じ決まりで求める）。
 /// </summary>
 internal sealed class BookmarkDialog : Form
@@ -77,6 +84,21 @@ internal sealed class BookmarkDialog : Form
     // LabelEdit は、画面の読み上げなどが動いていると、編集を終えた後にアプリが落ちることがある（.NET 10.0.12 で確認）
     private readonly TreeView _tree = new() { Dock = DockStyle.Fill, HideSelection = false, ShowNodeToolTips = true };
     private TextBox? _editor;
+    // 選んだしおりへの操作のボタン（右クリックやキーを知らなくても使えるように）
+    private readonly Button _promote = ExcelSheetsDialog.DialogButton("← 段を上げる");
+    private readonly Button _demote = ExcelSheetsDialog.DialogButton("段を下げる →");
+    private readonly Button _rename = ExcelSheetsDialog.DialogButton("名前を変える");
+    private readonly Button _remove = ExcelSheetsDialog.DialogButton("外す");
+    private readonly ToolTip _toolTip = new();
+    /// <summary>
+    /// Ctrl / Shift を押しながらクリックして、選んでいる行と一緒に選んだ行。
+    /// 木は作り直すたびに行が変わるので、行の作り（KeyOf）で覚える。
+    /// </summary>
+    private readonly HashSet<string> _marked = [];
+    /// <summary>次の選び直しで、一緒に選んだ行を消さない（Ctrl / Shift のクリック）。</summary>
+    private bool _keepMarks;
+    /// <summary>次の選び直しを取りやめる（Ctrl で、選んでいない行の印を外すとき）。</summary>
+    private bool _cancelSelect;
     private readonly ContextMenuStrip _menu = new();
     private TreeNode? _menuTarget;
     private bool _menuByMouse;
@@ -147,8 +169,13 @@ internal sealed class BookmarkDialog : Form
         var treePane = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, Margin = Padding.Empty, Padding = new Padding(0, 0, 4, 0) };
         treePane.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         treePane.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        treePane.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         treePane.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         treePane.Controls.Add(new Label { Text = "できあがるしおり（括弧の中は、結合した PDF でのページ）", AutoSize = true, Margin = new Padding(0, 6, 0, 4) });
+        var actions = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, WrapContents = true, Margin = new Padding(0, 0, 0, 4) };
+        foreach (var button in new[] { _promote, _demote, _rename, _remove }) button.Margin = new Padding(0, 0, 6, 0);
+        actions.Controls.AddRange([_promote, _demote, _rename, _remove]);
+        treePane.Controls.Add(actions);
         treePane.Controls.Add(_tree);
         _split.Panel1.Controls.Add(treePane);
 
@@ -166,8 +193,8 @@ internal sealed class BookmarkDialog : Form
 
         root.Controls.Add(new Label
         {
-            Text = "右のページを押すと、そのページのしおりを選びます（拡大は虫眼鏡）。右クリックすると、そのページにしおりを付けられます。"
-                + "名前は F2 で変えられ、元のしおりと付けたしおりは Delete で外せます。"
+            Text = "上のボタンで、選んだしおりの段の上げ下げ・名前の変更・外すができます（Alt+Shift+← →、F2、Delete でも）。"
+                + "右のページを押すとそのページのしおりを選び、右クリックするとそのページにしおりを付けられます。"
                 + "木の右クリックで、ファイルごとに元のしおりを何段まで付けるかも選べます。",
             AutoSize = true,
             MaximumSize = new Size(940, 0),
@@ -201,25 +228,58 @@ internal sealed class BookmarkDialog : Form
             _choices.Folders = _folders.Checked;
             Rebuild();
         };
+        _promote.Click += (_, _) => MoveLevel(Chosen(), -1);
+        _demote.Click += (_, _) => MoveLevel(Chosen(), +1);
+        _rename.Click += (_, _) => { if (_tree.SelectedNode is { } node) BeginInvoke(() => BeginRename(node)); };
+        _remove.Click += (_, _) => Drop(Chosen());
+        const string Several = "Ctrl か Shift を押しながらクリックすると、いくつかまとめて選べます。";
+        _toolTip.SetToolTip(_promote, "選んだしおりを 1 段上げます。下のしおりも一緒に動きます（Alt+Shift+←）。" + Several);
+        _toolTip.SetToolTip(_demote, "選んだしおりを、すぐ上のしおりの下へ 1 段下げます。下のしおりも一緒に動きます（Alt+Shift+→）。" + Several);
+        _toolTip.SetToolTip(_rename, "選んだしおりの名前を変えます（F2）");
+        _toolTip.SetToolTip(_remove, "選んだしおりを外します。元のしおりは下のしおりも外れます（Delete）。" + Several);
         _tree.KeyDown += (_, e) =>
         {
             _menuByMouse = false; // この後の Shift+F10 は、選んでいる行のメニューにする
-            if (e.KeyCode == Keys.F2 && _tree.SelectedNode is { } node) BeginRename(node);
-            else if (e.KeyCode == Keys.Delete && _tree.SelectedNode is { Tag: Bookmark { Kind: BookmarkKind.Original or BookmarkKind.Added } } original)
-                Drop(original);
+            if (e.Alt && e.Shift && e.KeyCode is Keys.Left or Keys.Right)
+            {
+                e.Handled = e.SuppressKeyPress = true; // 木の開け閉めはしない
+                MoveLevel(Chosen(), e.KeyCode == Keys.Left ? -1 : +1);
+            }
+            else if (e.KeyCode == Keys.F2 && _tree.SelectedNode is { } node) BeginRename(node);
+            else if (e.KeyCode == Keys.Delete) Drop(Chosen());
         };
         // 右クリックした行を選んでから、メニューを開く（TreeView は右クリックでは選ばない）。
         // 行のないところで右クリックしたときは、前に選んでいた行のメニューを出さない
         _tree.MouseDown += (_, e) =>
         {
+            if (e.Button == MouseButtons.Left)
+            {
+                // 開け閉めの印を押しただけなら、選び方は変えない
+                if (_tree.HitTest(e.Location).Location != TreeViewHitTestLocations.PlusMinus) OnLeftDown(_tree.GetNodeAt(e.Location));
+                return;
+            }
             if (e.Button != MouseButtons.Right) return;
             _menuTarget = _tree.GetNodeAt(e.Location);
             _menuByMouse = true;
+            // 一緒に選んだ行の上での右クリックなら、まとめて選んだまま操作する
+            if (_menuTarget is not null && !IsChosen(_menuTarget)) _marked.Clear();
+            else if (_menuTarget is not null) _keepMarks = true;
             if (_menuTarget is not null) _tree.SelectedNode = _menuTarget;
+            ApplyMarks();
+        };
+        _tree.BeforeSelect += (_, e) =>
+        {
+            e.Cancel = _cancelSelect;
+            _cancelSelect = false;
         };
         _menu.Opening += OnMenuOpening;
         _tree.AfterSelect += (_, e) =>
         {
+            // 何も押さずに選び直したら（クリックや矢印キー）、一緒に選んだ行は外す
+            if (!_keepMarks && !_rebuilding) _marked.Clear();
+            _keepMarks = false;
+            ApplyMarks();
+            UpdateActions();
             if (!_rebuilding && e.Node is not null) ShowPagesOf(e.Node, scroll: true);
         };
         _strip.PageClickSelects = true;
@@ -400,6 +460,152 @@ internal sealed class BookmarkDialog : Form
         _pagesNote.Text = text;
     }
 
+    /// <summary>ファイルのしおりの下での段（1 が一番上）。</summary>
+    private static int LevelOf(TreeNode node)
+    {
+        int level = 0;
+        for (var n = node; n is not null && n.Tag is not Bookmark { Kind: BookmarkKind.File }; n = n.Parent) level++;
+        return level;
+    }
+
+    private static bool IsMovable(TreeNode? node) => node?.Tag is Bookmark { Kind: BookmarkKind.Original or BookmarkKind.Added };
+
+    /// <summary>木を作り直しても同じしおりを指す、行の作り。</summary>
+    private static string KeyOf(Bookmark b) => $"{b.Kind}|{b.Part}|{b.OutlinePath}|{b.AddedIndex}";
+
+    private bool IsChosen(TreeNode node) =>
+        IsMovable(node) && (node == _tree.SelectedNode || _marked.Contains(KeyOf((Bookmark)node.Tag!)));
+
+    /// <summary>
+    /// 操作の対象になる行（選んでいる行と、一緒に選んだ行）を上から順に。
+    /// 親と子を両方選んでいたら親だけにする（子は親に付いて動くので）。
+    /// </summary>
+    private List<TreeNode> Chosen()
+    {
+        var chosen = All(_tree.Nodes).Where(IsChosen).ToList();
+        var set = chosen.ToHashSet();
+        return chosen.Where(n => !AncestorsOf(n).Any(set.Contains)).ToList();
+    }
+
+    private static IEnumerable<TreeNode> All(TreeNodeCollection nodes)
+    {
+        foreach (TreeNode node in nodes)
+            foreach (var n in WithDescendants(node)) yield return n;
+    }
+
+    private static IEnumerable<TreeNode> AncestorsOf(TreeNode node)
+    {
+        for (var n = node.Parent; n is not null; n = n.Parent) yield return n;
+    }
+
+    /// <summary>
+    /// Ctrl を押しながらのクリックは、その行を一緒に選ぶ（もう選んでいれば外す）。
+    /// Shift を押しながらのクリックは、選んでいる行からその行までを一緒に選ぶ。何も押さなければ 1 行だけにする。
+    /// </summary>
+    private void OnLeftDown(TreeNode? hit)
+    {
+        if (hit is null) return;
+        var keys = ModifierKeys;
+        var current = _tree.SelectedNode;
+        if (keys.HasFlag(Keys.Control) && IsMovable(hit))
+        {
+            if (IsMovable(current)) _marked.Add(KeyOf((Bookmark)current!.Tag!));
+            string key = KeyOf((Bookmark)hit.Tag!);
+            if (hit != current && _marked.Remove(key)) _cancelSelect = true; // 印を外すだけで、選び直さない
+            else _marked.Add(key);
+            _keepMarks = true;
+        }
+        else if (keys.HasFlag(Keys.Shift) && IsMovable(hit) && IsMovable(current))
+        {
+            var visible = All(_tree.Nodes).Where(n => n.IsVisible || AncestorsOf(n).All(a => a.IsExpanded)).ToList();
+            int from = visible.IndexOf(current!), to = visible.IndexOf(hit);
+            if (from >= 0 && to >= 0)
+            {
+                foreach (var n in visible.Skip(Math.Min(from, to)).Take(Math.Abs(to - from) + 1).Where(IsMovable))
+                    _marked.Add(KeyOf((Bookmark)n.Tag!));
+            }
+            _keepMarks = true;
+        }
+        else
+        {
+            _marked.Clear();
+        }
+        ApplyMarks();
+        UpdateActions();
+    }
+
+    /// <summary>一緒に選んだ行に、選んでいる行と同じ色を付ける（TreeView は 1 行しか選べないので、色で見せる）。</summary>
+    private void ApplyMarks()
+    {
+        foreach (var node in All(_tree.Nodes))
+        {
+            if (node.Tag is not Bookmark bookmark) continue;
+            bool marked = node != _tree.SelectedNode && _marked.Contains(KeyOf(bookmark));
+            node.BackColor = marked ? SystemColors.Highlight : Color.Empty;
+            node.ForeColor = marked ? SystemColors.HighlightText : Color.Empty;
+        }
+    }
+
+    /// <summary>
+    /// 段を変えられるか。上げるのは、どれも一番上の段でないとき。
+    /// 下げるのは、どれもすぐ上に同じ段のしおりがあるとき（その下に入る。並んだ兄弟を選んでいれば、そろって同じしおりの下に入る）。
+    /// </summary>
+    private static bool CanMove(IReadOnlyList<TreeNode> nodes, int delta) =>
+        nodes.Count > 0 && nodes.All(n => IsMovable(n) && (delta < 0 ? LevelOf(n) > 1 : n.PrevNode is not null));
+
+    /// <summary>
+    /// しおりの段を 1 つ上げる（delta = -1）か下げる（+1）。下のしおりも一緒に動かす。
+    /// 段を書き込むのは、動かしたしおりと、下にある「段が書き込み済みのしおり・足したしおり」だけ
+    /// （何もしていない元のしおりは、親に付いて動くので書き込まない。書き込むと手直しの件数が増えて見える）。
+    /// </summary>
+    private void MoveLevel(IReadOnlyList<TreeNode> nodes, int delta)
+    {
+        if (!CanMove(nodes, delta)) return;
+        EndRename(commit: true);
+        var primary = _tree.SelectedNode?.Tag as Bookmark;
+        foreach (var node in nodes)
+            MoveOne(node, delta);
+        // 一緒に選んだ行は、行の作りで覚えているので、作り直したあとも選んだまま
+        Rebuild(primary is null ? null : b => KeyOf(b) == KeyOf(primary));
+    }
+
+    private void MoveOne(TreeNode node, int delta)
+    {
+        foreach (var n in WithDescendants(node))
+        {
+            int level = LevelOf(n) + delta;
+            switch (n.Tag)
+            {
+                case Bookmark { Kind: BookmarkKind.Original, OutlinePath: { } path } original:
+                    var levels = _choices.LevelsOf(original.Part);
+                    if (ReferenceEquals(n, node) || levels.ContainsKey(path)) levels[path] = level;
+                    break;
+                case Bookmark { Kind: BookmarkKind.Added } added:
+                    var list = _choices.Added[added.Part];
+                    list[added.AddedIndex] = list[added.AddedIndex] with { Level = level };
+                    break;
+            }
+        }
+    }
+
+    private static IEnumerable<TreeNode> WithDescendants(TreeNode node)
+    {
+        yield return node;
+        foreach (TreeNode child in node.Nodes)
+            foreach (var n in WithDescendants(child)) yield return n;
+    }
+
+    /// <summary>選んだ行に合わせて、操作のボタンを押せるかどうかを決める。</summary>
+    private void UpdateActions()
+    {
+        var chosen = Chosen();
+        _promote.Enabled = CanMove(chosen, -1);
+        _demote.Enabled = CanMove(chosen, +1);
+        _rename.Enabled = IsEditable(_tree.SelectedNode) && chosen.Count <= 1; // 名前は 1 件ずつ
+        _remove.Enabled = chosen.Count > 0;
+        _remove.Text = chosen.Count > 1 ? $"外す（{chosen.Count} 件）" : "外す";
+    }
+
     private static TreeNode? FileNodeOf(TreeNode? node)
     {
         while (node is not null && node.Tag is not Bookmark { Kind: BookmarkKind.File }) node = node.Parent;
@@ -422,6 +628,7 @@ internal sealed class BookmarkDialog : Form
         // ページ順に並べる。同じページなら、足した順に後ろへ
         int index = list.FindLastIndex(b => b.Page <= page) + 1;
         // 仮の名前は、ページの下に出ている番号（結合した PDF でのページ）にそろえる
+        _marked.Clear(); // 足したしおりの番号がずれるので、一緒に選んだ印は消す
         list.Insert(index, new AddedBookmark($"{_mergedNumbers.GetValueOrDefault(page, page + 1)} ページ", page));
         int part = _shownPart;
         Rebuild(b => b.Kind == BookmarkKind.Added && b.Part == part && b.AddedIndex == index);
@@ -459,6 +666,7 @@ internal sealed class BookmarkDialog : Form
         {
             _icons.Dispose();
             _menu.Dispose();
+            _toolTip.Dispose();
         }
         base.Dispose(disposing);
     }
@@ -467,12 +675,18 @@ internal sealed class BookmarkDialog : Form
         node?.Tag is Bookmark { Kind: BookmarkKind.File or BookmarkKind.Folder or BookmarkKind.Original or BookmarkKind.Added };
 
     /// <summary>元のしおり（その下のしおりごと）か、足したしおりを外す。外したあとは、上の行を選んでおく。</summary>
-    private void Drop(TreeNode node)
+    private void Drop(IReadOnlyList<TreeNode> nodes)
     {
-        var bookmark = (Bookmark)node.Tag!;
-        if (bookmark.Kind == BookmarkKind.Added) _choices.Added[bookmark.Part].RemoveAt(bookmark.AddedIndex);
-        else _choices.EditsOf(bookmark.Part)[bookmark.OutlinePath!] = null;
-        _tree.SelectedNode = node.Parent;
+        if (nodes.Count == 0) return;
+        EndRename(commit: true);
+        var bookmarks = nodes.Select(n => (Bookmark)n.Tag!).ToList();
+        foreach (var original in bookmarks.Where(b => b.Kind == BookmarkKind.Original))
+            _choices.EditsOf(original.Part)[original.OutlinePath!] = null;
+        // 足したしおりは番号で指しているので、後ろから外す（前から外すと、後ろの番号がずれる）
+        foreach (var added in bookmarks.Where(b => b.Kind == BookmarkKind.Added).OrderByDescending(b => b.AddedIndex))
+            _choices.Added[added.Part].RemoveAt(added.AddedIndex);
+        _marked.Clear(); // 足したしおりの番号が変わるので、一緒に選んだ印は消す
+        _tree.SelectedNode = nodes[0].Parent;
         Rebuild();
     }
 
@@ -579,14 +793,28 @@ internal sealed class BookmarkDialog : Form
         var bookmark = (Bookmark)node!.Tag!;
         e.Cancel = false; // 項目が空のメニューは、開く前から取りやめの印が付いている。ここで項目を足すので外す
         _menu.Items.Add(new ToolStripMenuItem("名前を変える", null, (_, _) => BeginInvoke(() => BeginRename(node))) { ShortcutKeyDisplayString = "F2" });
+        if (bookmark.Kind is BookmarkKind.Original or BookmarkKind.Added)
+        {
+            var chosen = Chosen();
+            _menu.Items.Add(new ToolStripMenuItem("1 段上げる", null, (_, _) => MoveLevel(chosen, -1))
+            {
+                ShortcutKeyDisplayString = "Alt+Shift+←",
+                Enabled = CanMove(chosen, -1),
+            });
+            _menu.Items.Add(new ToolStripMenuItem("1 段下げる", null, (_, _) => MoveLevel(chosen, +1))
+            {
+                ShortcutKeyDisplayString = "Alt+Shift+→",
+                Enabled = CanMove(chosen, +1),
+            });
+        }
         if (bookmark.Kind == BookmarkKind.Added)
         {
-            _menu.Items.Add(new ToolStripMenuItem("このしおりを外す", null, (_, _) => Drop(node)) { ShortcutKeyDisplayString = "Delete" });
+            _menu.Items.Add(new ToolStripMenuItem("このしおりを外す", null, (_, _) => Drop(Chosen())) { ShortcutKeyDisplayString = "Delete" });
             return;
         }
         if (bookmark.Kind == BookmarkKind.Original)
         {
-            _menu.Items.Add(new ToolStripMenuItem("このしおりを外す（下のしおりも外れます）", null, (_, _) => Drop(node))
+            _menu.Items.Add(new ToolStripMenuItem("このしおりを外す（下のしおりも外れます）", null, (_, _) => Drop(Chosen()))
             {
                 ShortcutKeyDisplayString = "Delete",
             });
@@ -602,11 +830,13 @@ internal sealed class BookmarkDialog : Form
         }
         if (bookmark.Kind != BookmarkKind.File) return;
 
-        if (_choices.OutlineEdits.GetValueOrDefault(bookmark.Part) is { Count: > 0 })
+        if (_choices.OutlineEdits.GetValueOrDefault(bookmark.Part) is { Count: > 0 }
+            || _choices.OutlineLevels.GetValueOrDefault(bookmark.Part) is { Count: > 0 })
         {
             _menu.Items.Add("元のしおりの手直しを取り消す", null, (_, _) =>
             {
                 _choices.OutlineEdits.Remove(bookmark.Part);
+                _choices.OutlineLevels.Remove(bookmark.Part);
                 Rebuild();
             });
         }
@@ -630,7 +860,8 @@ internal sealed class BookmarkDialog : Form
     {
         var parts = new List<string>();
         if (FileDepthText(_choices.FileDepths.GetValueOrDefault(part)) is { Length: > 0 } depth) parts.Add(depth);
-        if (_choices.OutlineEdits.GetValueOrDefault(part) is { Count: > 0 } edits) parts.Add($"手直し {edits.Count} 件");
+        int edited = (_choices.OutlineEdits.GetValueOrDefault(part)?.Count ?? 0) + (_choices.OutlineLevels.GetValueOrDefault(part)?.Count ?? 0);
+        if (edited > 0) parts.Add($"手直し {edited} 件");
         if (_choices.Added.GetValueOrDefault(part) is { Count: > 0 } added) parts.Add($"足したしおり {added.Count} 件");
         return string.Join("・", parts);
     }
@@ -676,6 +907,8 @@ internal sealed class BookmarkDialog : Form
         }
         _tree.EndUpdate();
         _rebuilding = false;
+        ApplyMarks();
+        UpdateActions();
         _strip.Invalidate(); // ページの下の、付けたしおりの名前を描き直す
         // 目次ページを並べているときは、名前の変更を目次にも映す
         if (_shownPart == ContentsPart && select is null) ShowContents();

@@ -215,6 +215,23 @@ public sealed class BookmarkTests : IDisposable
         Assert.Equal(0, PdfMerger.WriteContents([], MergeOptions.None, _folder.File("none.pdf")));
     }
 
+    [Theory]
+    [InlineData("0/0", 1, "資料@0[第1章@0 1.1@1[1.1.1@1] 第2章@3]")]       // 1.1 を上げると、下の 1.1.1 も付いて上がる
+    [InlineData("1", 2, "資料@0[第1章@0[1.1@1[1.1.1@1] 第2章@3]]")]       // 第2章を下げると、第1章の下に入る
+    [InlineData("0", 3, "資料@0[第1章@0[1.1@1[1.1.1@1]] 第2章@3]")]       // 深すぎる段は、前のしおりの 1 段下にそろえる
+    public void Bookmarks_move_original_bookmarks_to_the_chosen_level(string path, int level, string expected)
+    {
+        var part = Part("資料", 4, Chapters) with { OutlineLevels = new Dictionary<string, int> { [path] = level } };
+        Assert.Equal(expected, Show(PdfMerger.Bookmarks([part], MergeOptions.None)));
+    }
+
+    [Fact]
+    public void Bookmarks_nest_an_added_bookmark_at_its_level()
+    {
+        var part = Part("資料", 4, Chapters) with { Added = [new("図表", 2, Level: 2)] };
+        Assert.Equal("資料@0[第1章@0[1.1@1[1.1.1@1] 図表@2] 第2章@3]", Show(PdfMerger.Bookmarks([part], MergeOptions.None)));
+    }
+
     [Fact]
     public void Bookmarks_let_a_file_choose_its_own_depth()
     {

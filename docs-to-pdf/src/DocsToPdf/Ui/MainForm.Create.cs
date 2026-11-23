@@ -128,6 +128,7 @@ internal sealed partial class MainForm
             choices.Titles[i] = entries[i].Title;
             choices.FileDepths[i] = entries[i].OutlineDepth;
             choices.OutlineEdits[i] = new(entries[i].OutlineEdits);
+            choices.OutlineLevels[i] = new(entries[i].OutlineLevels);
             choices.Added[i] = [.. entries[i].AddedBookmarks];
         }
         return choices;
@@ -150,6 +151,7 @@ internal sealed partial class MainForm
             Title = TitleOf(e, choices.Titles.GetValueOrDefault(i, e.Title)),
             OutlineDepth = choices.FileDepths.GetValueOrDefault(i, e.OutlineDepth),
             OutlineEdits = choices.OutlineEdits.TryGetValue(i, out var edits) ? edits : parts[i].OutlineEdits,
+            OutlineLevels = choices.OutlineLevels.TryGetValue(i, out var levels) ? levels : parts[i].OutlineLevels,
             Added = choices.Added.TryGetValue(i, out var added) ? added : parts[i].Added,
             Folders = groups?[i].Select(f => choices.FolderNames.TryGetValue(f.Key, out var name) ? f with { Name = name } : f).ToList() ?? [],
         }).ToList();
@@ -159,7 +161,7 @@ internal sealed partial class MainForm
     private static string TitleOf(FileEntry e, string title) => title.Trim() is { Length: > 0 } t ? t : e.DefaultTitle;
 
     private static MergePart PartOf(FileEntry e) =>
-        new(e.Converted!.PdfPath, e.Title, e.SelectedPages, e.Converted.Outline, e.Rotations) { OutlineDepth = e.OutlineDepth, OutlineEdits = e.OutlineEdits, Added = e.AddedBookmarks };
+        new(e.Converted!.PdfPath, e.Title, e.SelectedPages, e.Converted.Outline, e.Rotations) { OutlineDepth = e.OutlineDepth, OutlineEdits = e.OutlineEdits, OutlineLevels = e.OutlineLevels, Added = e.AddedBookmarks };
 
     /// <summary>進み具合のバーを 0 から始め、1 件終わるごとに進める報告先を返す。</summary>
     private Progress<int> StartProgress(int total)

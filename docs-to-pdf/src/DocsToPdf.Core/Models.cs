@@ -10,8 +10,11 @@ internal sealed record SheetInfo(string Name, int Pages, bool Included);
 /// <summary>しおり 1 件。PageIndex はその PDF の中での 0 始まりのページ位置。</summary>
 internal sealed record OutlineNode(string Title, int PageIndex, IReadOnlyList<OutlineNode> Children);
 
-/// <summary>利用者がページを見て足したしおり。Page は元の PDF の中での 0 始まりのページ位置。</summary>
-internal sealed record AddedBookmark(string Title, int Page);
+/// <summary>
+/// 利用者がページを見て足したしおり。Page は元の PDF の中での 0 始まりのページ位置。
+/// Level はファイルのしおりの下での段（1 が一番上）。前のしおりより 2 段以上深くはならない（組み立てるときにそろえる）。
+/// </summary>
+internal sealed record AddedBookmark(string Title, int Page, int Level = 1);
 
 /// <summary>
 /// 足したしおりと、足したときのページの並び（枚数と大きさ）。
@@ -28,6 +31,9 @@ internal sealed record PageBookmarks(IReadOnlyList<PageSize> Pages, IReadOnlyLis
 /// </summary>
 internal sealed record OutlineChanges(IReadOnlyList<OutlineNode> Outline, IReadOnlyDictionary<string, string?> Edits)
 {
+    /// <summary>段の付け直し（MergePart.OutlineLevels と同じ意味）。</summary>
+    public IReadOnlyDictionary<string, int> Levels { get; init; } = MergePart.NoLevels;
+
     /// <summary>outline が、手直ししたときのしおりと同じ（名前とページと並びが同じ）か。</summary>
     public bool AppliesTo(IReadOnlyList<OutlineNode> outline) => Same(Outline, outline);
 
@@ -145,6 +151,10 @@ internal sealed class FileEntry
     /// <summary>今の変換結果に当てられる、元のしおりの手直し。</summary>
     public IReadOnlyDictionary<string, string?> OutlineEdits =>
         OutlineChanges is { } changes && Converted is { } pdf && changes.AppliesTo(pdf.Outline) ? changes.Edits : MergePart.NoEdits;
+
+    /// <summary>今の変換結果に当てられる、元のしおりの段の付け直し。</summary>
+    public IReadOnlyDictionary<string, int> OutlineLevels =>
+        OutlineChanges is { } changes && Converted is { } pdf && changes.AppliesTo(pdf.Outline) ? changes.Levels : MergePart.NoLevels;
     /// <summary>使うページの指定（"1-3,5"）。空ならすべて。</summary>
     public string PageRange { get; set; } = "";
     /// <summary>出力する Excel のシート名。null ならすべて。</summary>

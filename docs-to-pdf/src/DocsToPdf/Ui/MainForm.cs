@@ -536,9 +536,9 @@ internal sealed partial class MainForm : Form
         new(_optPageNumbers.Checked, _optToc.Checked, _optDuplex.Checked, documentTitle) { OutlineDepth = _outlineDepth };
 
     /// <summary>
-    /// 結合した PDF に付くしおりを見せ、名前と、元のしおりの段数と、フォルダごとにまとめるかを直してもらう。
+    /// 結合した PDF に付くしおりを見せ、名前・段・足したしおり・元のしおりの段数・フォルダごとにまとめるかを直してもらう。
     /// 変換中や結合できないファイルは、まだしおりに入れられないので、その件数を添える。
-    /// ファイルの名前と段数は一覧の行に移すので、元に戻す（Ctrl+Z）で戻せる。
+    /// 決めたことは一覧の行と設定に移し、元に戻す（Ctrl+Z）でまとめて戻せる。
     /// </summary>
     private void ShowBookmarks()
     {
@@ -568,8 +568,9 @@ internal sealed partial class MainForm : Form
 
         var choices = dialog.Choices;
         var changed = usable.Select((e, i) => (Entry: e, Title: TitleOf(e, choices.Titles[i]), Depth: choices.FileDepths[i],
-                Edits: choices.OutlineEdits[i], Outline: parts[i].Outline, Added: choices.Added[i], Pages: pages[i]))
+                Edits: choices.OutlineEdits[i], Levels: choices.OutlineLevels[i], Outline: parts[i].Outline, Added: choices.Added[i], Pages: pages[i]))
             .Where(c => c.Title != c.Entry.Title || c.Depth != c.Entry.OutlineDepth || !SameEdits(c.Edits, c.Entry.OutlineEdits)
+                || !SameEdits(c.Levels, c.Entry.OutlineLevels)
                 || !c.Added.SequenceEqual(c.Entry.AddedBookmarks))
             .ToList();
         bool renamedFolders = choices.FolderNames.Count != _folderNames.Count
@@ -577,12 +578,13 @@ internal sealed partial class MainForm : Form
         if (changed.Count == 0 && !renamedFolders && choices.Depth == _outlineDepth && choices.Folders == _folderBookmarks) return;
 
         PushUndo();
-        foreach (var (entry, title, depth, edits, outline, added, pageSizes) in changed)
+        foreach (var (entry, title, depth, edits, levels, outline, added, pageSizes) in changed)
         {
             entry.Title = title;
             entry.OutlineDepth = depth;
             // 手直しは、ダイアログを開いたときのしおりとページに結び付ける（開いている間に変換し直されたら当てない）
-            entry.OutlineChanges = edits.Count == 0 ? null : new OutlineChanges(outline, new Dictionary<string, string?>(edits));
+            entry.OutlineChanges = edits.Count == 0 && levels.Count == 0 ? null
+                : new OutlineChanges(outline, new Dictionary<string, string?>(edits)) { Levels = new Dictionary<string, int>(levels) };
             entry.PageBookmarks = added.Count == 0 ? null : new PageBookmarks(pageSizes, [.. added]);
             EntryChanged(entry);
         }
@@ -611,17 +613,17 @@ internal sealed partial class MainForm : Form
         }
     }
 
-    private static bool SameEdits(IReadOnlyDictionary<string, string?> a, IReadOnlyDictionary<string, string?> b) =>
-        a.Count == b.Count && a.All(p => b.TryGetValue(p.Key, out var v) && v == p.Value);
+    private static bool SameEdits<T>(IReadOnlyDictionary<string, T> a, IReadOnlyDictionary<string, T> b) =>
+        a.Count == b.Count && a.All(p => b.TryGetValue(p.Key, out var v) && EqualityComparer<T>.Default.Equals(v, p.Value));
 
     /// <summary>
     /// しおりの選び方が既定と違うときは、ボタンにそう書き、中身をヒントに出す（次に開いたときも効いていると分かるように）。
-    /// ファイルごとの段数は一覧に出ないので、指定があることも数える。ボタンの文字は、選び方が増えても長くならないようにする。
+    /// ファイルごとの指定（段数・手直し・足したしおり）は一覧に出ないので、あることも数える。ボタンの文字は、選び方が増えても長くならないようにする。
     /// </summary>
     private void ShowBookmarkChoice()
     {
         string choice = BookmarkDialog.Describe(_outlineDepth, _folderBookmarks,
-            Entries().Any(e => e.OutlineDepth is not null || e.OutlineEdits.Count > 0 || e.AddedBookmarks.Count > 0));
+            Entries().Any(e => e.OutlineDepth is not null || e.OutlineEdits.Count > 0 || e.OutlineLevels.Count > 0 || e.AddedBookmarks.Count > 0));
         string text = choice.Length > 0 ? "しおりを確認...（既定から変更あり）" : "しおりを確認...";
         if (_bookmarks.Text == text && _bookmarkChoice == choice) return;
         _bookmarks.Text = text;

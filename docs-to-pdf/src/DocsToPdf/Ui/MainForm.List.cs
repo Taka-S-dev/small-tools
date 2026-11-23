@@ -11,7 +11,7 @@ internal sealed partial class MainForm
 
     /// <summary>元に戻すための、ある時点の一覧の写し。並び順と、利用者が決めた値を持つ。</summary>
     private sealed record Snapshot(FileEntry Entry, string Title, string PageRange, IReadOnlyList<string>? Sheets, bool FitWidth,
-        IReadOnlyDictionary<int, int> Rotations, int? OutlineDepth, OutlineChanges? OutlineChanges);
+        IReadOnlyDictionary<int, int> Rotations, int? OutlineDepth, OutlineChanges? OutlineChanges, PageBookmarks? PageBookmarks);
 
     /// <summary>元に戻す 1 回分。行の写しと、しおりの確認で決めたもの（フォルダの段の名前、全体の段数、フォルダごとにまとめるか）。</summary>
     private sealed record ListState(Snapshot[] Rows, IReadOnlyDictionary<string, string> FolderNames, int? OutlineDepth, bool FolderBookmarks);
@@ -262,10 +262,21 @@ internal sealed partial class MainForm
             entry.Converted = pdf;
             entry.State = EntryState.Ready;
             entry.Error = null;
-            // 元のファイルが変わってしおりが変わったら、位置で当てている手直しは別の見出しに当たるので捨てる
+            // 元のファイルが変わってしおりやページの並びが変わったら、位置やページで当てている手直しは
+            // 別の見出しやページに当たるので捨てる
+            bool dropped = false;
             if (entry.OutlineChanges is { } changes && !changes.AppliesTo(pdf.Outline))
             {
                 entry.OutlineChanges = null;
+                dropped = true;
+            }
+            if (entry.PageBookmarks is { } added && !added.AppliesTo(pdf.PageSizes))
+            {
+                entry.PageBookmarks = null;
+                dropped = true;
+            }
+            if (dropped)
+            {
                 _droppedEdits.Add(entry.FileName);
                 SetStatus(DroppedEditsNotice());
             }
@@ -446,7 +457,7 @@ internal sealed partial class MainForm
     }
 
     private ListState TakeSnapshot() =>
-        new(Entries().Select(e => new Snapshot(e, e.Title, e.PageRange, e.Sheets, e.FitWidth, e.Rotations, e.OutlineDepth, e.OutlineChanges)).ToArray(),
+        new(Entries().Select(e => new Snapshot(e, e.Title, e.PageRange, e.Sheets, e.FitWidth, e.Rotations, e.OutlineDepth, e.OutlineChanges, e.PageBookmarks)).ToArray(),
             new Dictionary<string, string>(_folderNames, StringComparer.OrdinalIgnoreCase), _outlineDepth, _folderBookmarks);
 
     /// <summary>一覧を変える操作の直前に呼ぶ。</summary>
@@ -497,6 +508,7 @@ internal sealed partial class MainForm
             entry.Rotations = saved.Rotations;
             entry.OutlineDepth = saved.OutlineDepth;
             entry.OutlineChanges = saved.OutlineChanges;
+            entry.PageBookmarks = saved.PageBookmarks;
 
             var item = CreateItem(entry);
             _list.Items.Add(item);
@@ -660,8 +672,29 @@ internal sealed partial class MainForm
         if (entry.Converted is null) return;
         using var viewer = new PageViewer(entry, pageIndex, editable: !_busy,
             toggle: page => TogglePage(entry, page),
-            rotate: (page, degrees) => RotatePage(entry, page, degrees));
+            rotate: (page, degrees) => RotatePage(entry, page, degrees),
+            addBookmark: (page, owner) => AddBookmark(entry, page, owner));
         viewer.ShowDialog(this);
+    }
+
+    /// <summary>
+    /// ページを見て、そのページにしおりを足す（元のしおりのない、スキャンした PDF などのため）。
+    /// 名前を尋ね、元に戻す（Ctrl+Z）で戻せるようにする。名前の変更や削除は「しおりを確認」で行う。
+    /// </summary>
+    private void AddBookmark(FileEntry entry, int page, IWin32Window? owner = null)
+    {
+        if (_busy || entry.Converted is not { } pdf || page < 0 || page >= pdf.PageCount) return;
+        using var dialog = new TextPromptDialog("しおりを付ける", $"{entry.FileName} の {page + 1} ページに付けるしおりの名前", "");
+        if (dialog.ShowDialog(owner ?? this) != DialogResult.OK || dialog.Value.Length == 0) return;
+
+        PushUndo();
+        // 同じページに足したしおりは、足した順に並べる（OrderBy は順を保つ）
+        var items = entry.AddedBookmarks.Append(new AddedBookmark(dialog.Value, page)).OrderBy(b => b.Page).ToList();
+        entry.PageBookmarks = new PageBookmarks(pdf.PageSizes, items);
+        EntryChanged(entry);
+        SetStatus(entry.SelectedPages.Contains(page)
+            ? $"{page + 1} ページにしおり「{dialog.Value}」を付けました。名前の変更や削除は「しおりを確認」でできます。"
+            : $"{page + 1} ページにしおり「{dialog.Value}」を付けました。ただし、このページは結合しないので、結合した PDF には付きません。");
     }
 
     private void ExtractSelected()

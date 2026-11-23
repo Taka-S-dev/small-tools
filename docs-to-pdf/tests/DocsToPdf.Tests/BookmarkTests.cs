@@ -150,6 +150,72 @@ public sealed class BookmarkTests : IDisposable
     }
 
     [Fact]
+    public void Bookmarks_place_added_bookmarks_among_the_originals_by_page()
+    {
+        // 第1章(0) 第2章(3) の間の 2 ページ目に足すと間に入り、同じページなら元のしおりの後ろに入る
+        var part = Part("資料", 4, Chapters) with { Added = [new("図表", 2), new("補足", 3)] };
+        var bookmarks = PdfMerger.Bookmarks([part], MergeOptions.None);
+        Assert.Equal("資料@0[第1章@0[1.1@1[1.1.1@1]] 図表@2 第2章@3 補足@3]", Show(bookmarks));
+        Assert.Equal(BookmarkKind.Added, bookmarks[0].Children[1].Kind);
+        Assert.Equal(1, bookmarks[0].Children[3].AddedIndex);
+    }
+
+    [Theory]
+    [InlineData(0, "資料@0[図表@2]")]
+    [InlineData(1, "資料@0[第1章@0 図表@2 第2章@3]")]
+    public void Bookmarks_keep_added_bookmarks_whatever_the_depth(int depth, string expected)
+    {
+        var part = Part("資料", 4, Chapters) with { Added = [new("図表", 2)] };
+        Assert.Equal(expected, Show(PdfMerger.Bookmarks([part], MergeOptions.None with { OutlineDepth = depth })));
+    }
+
+    [Fact]
+    public void Bookmarks_leave_out_added_bookmarks_on_pages_not_merged()
+    {
+        var part = new MergePart("unused.pdf", "スキャン", [0, 2], []) { Added = [new("表紙", 0), new("外したページ", 1), new("献立", 2)] };
+        Assert.Equal("スキャン@0[表紙@0 献立@1]", Show(PdfMerger.Bookmarks([part], MergeOptions.None)));
+    }
+
+    [Fact]
+    public void Merge_writes_added_bookmarks_to_the_pdf()
+    {
+        string a = _folder.Pdf("scan.pdf", 3);
+        MergePart[] parts = [new(a, "スキャン", [0, 1, 2], []) { Added = [new("献立", 1), new("付録", 2)] }];
+        string output = _folder.File("out.pdf");
+
+        PdfMerger.Merge(parts, MergeOptions.None, output, ct: Ct);
+
+        Assert.Equal("スキャン@0[献立@1 付録@2]", Show(PdfInfo.Read(output).Outline));
+    }
+
+    [Theory]
+    // 資料@1[第1章@1[1.1@2[1.1.1@2]] 図表@3 第2章@4]、別のファイル b@5（目次が 1 ページ目）
+    [InlineData(0, 1, "第1章")]   // ファイルと章が同じページなら、細かいほう
+    [InlineData(0, 2, "1.1.1")]   // 同じページなら、いちばん細かい見出し
+    [InlineData(0, 3, "図表")]    // 足したしおり
+    [InlineData(0, 4, "第2章")]
+    [InlineData(1, 5, "b")]
+    [InlineData(1, 4, null)]      // そのファイルはまだ始まっていない
+    public void Covering_finds_the_finest_bookmark_that_starts_at_or_before_the_page(int part, int page, string? expected)
+    {
+        MergePart[] parts = [Part("資料", 4, Chapters) with { Added = [new("図表", 2)] }, Part("b", 1)];
+        var bookmarks = PdfMerger.Bookmarks(parts, MergeOptions.None with { TableOfContents = true });
+        Assert.Equal(expected, DocsToPdf.Core.Bookmarks.Covering(bookmarks, part, page)?.Title);
+    }
+
+    [Fact]
+    public void WriteContents_writes_only_the_contents_pages()
+    {
+        string a = _folder.Pdf("a.pdf", 2);
+        MergePart[] parts = [new(a, "議事録", [0, 1], []), new(a, "資料", [0], [])];
+        string output = _folder.File("contents.pdf");
+
+        Assert.Equal(1, PdfMerger.WriteContents(parts, MergeOptions.None, output));
+        Assert.Single(PdfInfo.Read(output).Sizes);
+        Assert.Equal(0, PdfMerger.WriteContents([], MergeOptions.None, _folder.File("none.pdf")));
+    }
+
+    [Fact]
     public void Bookmarks_let_a_file_choose_its_own_depth()
     {
         MergePart[] parts =

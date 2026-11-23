@@ -108,6 +108,58 @@ internal sealed class ExcelSheetsDialog : Form
     };
 }
 
+/// <summary>短い文字列（しおりの名前など）を尋ねる。空のままでは OK を押せない。</summary>
+internal sealed class TextPromptDialog : Form
+{
+    private readonly TextBox _text = new() { Dock = DockStyle.Fill };
+
+    public TextPromptDialog(string title, string message, string text)
+    {
+        SuspendLayout(); // 表示倍率の調整を ResumeLayout まで待たせる（MainForm と同じ）
+        Text = title;
+        FormBorderStyle = FormBorderStyle.FixedDialog;
+        MinimizeBox = false;
+        MaximizeBox = false;
+        ShowInTaskbar = false;
+        ShowIcon = false;
+        StartPosition = FormStartPosition.CenterParent;
+        AutoScaleDimensions = new SizeF(96F, 96F);
+        AutoScaleMode = AutoScaleMode.Dpi;
+        AutoSize = true;
+        AutoSizeMode = AutoSizeMode.GrowAndShrink;
+
+        var ok = ExcelSheetsDialog.DialogButton("OK", DialogResult.OK);
+        var cancel = ExcelSheetsDialog.DialogButton("キャンセル", DialogResult.Cancel);
+        var buttons = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, Margin = new Padding(0, 12, 0, 0) };
+        buttons.Controls.AddRange([cancel, ok]);
+
+        var root = new TableLayoutPanel { AutoSize = true, ColumnCount = 1, Padding = new Padding(12), MinimumSize = new Size(380, 0) };
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        root.Controls.Add(new Label { Text = message, AutoSize = true, MaximumSize = new Size(420, 0), Margin = new Padding(0, 0, 0, 8) });
+        root.Controls.Add(_text);
+        root.Controls.Add(buttons);
+        Controls.Add(root);
+
+        _text.Text = text;
+        _text.AccessibleName = message;
+        ok.Enabled = text.Trim().Length > 0;
+        _text.TextChanged += (_, _) => ok.Enabled = _text.Text.Trim().Length > 0;
+        AcceptButton = ok;
+        CancelButton = cancel;
+        ResumeLayout(false);
+        PerformLayout();
+    }
+
+    /// <summary>入力された文字列（前後の空白は除く）。</summary>
+    public string Value => _text.Text.Trim();
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        Theme.ApplyTitleBar(this);
+    }
+}
+
 /// <summary>パスワード付きファイルのパスワードを尋ねる。</summary>
 internal sealed class PasswordDialog : Form
 {

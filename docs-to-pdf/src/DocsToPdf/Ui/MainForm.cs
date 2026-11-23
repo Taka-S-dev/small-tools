@@ -308,6 +308,7 @@ internal sealed partial class MainForm : Form
         }
 
         _preview.PageToggled += TogglePage;
+        _preview.PageBookmarkRequested += (entry, page) => AddBookmark(entry, page);
         _preview.PageZoomRequested += ShowPage;
         _preview.PageRotateRequested += RotatePage;
         _preview.ChooseSheetsRequested += ChooseSheets;
@@ -480,13 +481,13 @@ internal sealed partial class MainForm : Form
     }
 
     /// <summary>
-    /// 変換し直してしおりが変わり、元のしおりの手直しを取り消したファイル。次に作成や保存を終えたときに知らせて空にする
+    /// 変換し直してしおりやページの並びが変わり、しおりの手直しを取り消したファイル。次に作成や保存を終えたときに知らせて空にする
     /// （その時点でも、できた PDF に手直しが入っていない理由になるので）。
     /// </summary>
     private readonly List<string> _droppedEdits = [];
 
     private string DroppedEditsNotice() =>
-        $"「{string.Join("」「", _droppedEdits)}」のしおりが変わったので、元のしおりの手直しを取り消しました。";
+        $"「{string.Join("」「", _droppedEdits)}」の中身が変わったので、そのファイルのしおりの手直しを取り消しました。";
 
     /// <summary>手直しを取り消したことを、作成や保存の知らせの後ろに添える（作成の直前の変換し直しで起きると、知らせが上書きされて見えないので）。</summary>
     private void AppendDroppedEdits()
@@ -549,28 +550,40 @@ internal sealed partial class MainForm : Form
         var options = CurrentOptions("");
         // 開いている間に裏の確認で行の変換結果が消えても困らないよう、開いたときの写しから木を作る
         var parts = usable.Select(PartOf).ToList();
+        var pages = usable.Select(e => e.Converted!.PageSizes).ToList();
         var roots = entries.Select(e => e.Root).ToList();
+        var converted = usable.Select(e => e.Converted!).ToList();
         using var dialog = new BookmarkDialog(
             choices => PdfMerger.Bookmarks(ApplyChoices(usable, parts, roots, choices), options with { OutlineDepth = choices.Depth }),
-            CurrentChoices(usable), note);
+            CurrentChoices(usable), note,
+            pagesOf: i => new BookmarkPages(converted[i], parts[i].Pages, parts[i].Rotations ?? FileEntry.NoRotations),
+            zoom: (i, page, owner) =>
+            {
+                // ダイアログの中では見るだけにする（結合の切り替えや回転は、OK の前の選び方と食い違うので）
+                using var viewer = new PageViewer(usable[i], page, editable: false, toggle: _ => { }, rotate: (_, _) => { });
+                viewer.ShowDialog(owner);
+            },
+            contents: options.TableOfContents ? choices => ContentsPreview(ApplyChoices(usable, parts, roots, choices), options) : null);
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
 
         var choices = dialog.Choices;
         var changed = usable.Select((e, i) => (Entry: e, Title: TitleOf(e, choices.Titles[i]), Depth: choices.FileDepths[i],
-                Edits: choices.OutlineEdits[i], Outline: parts[i].Outline))
-            .Where(c => c.Title != c.Entry.Title || c.Depth != c.Entry.OutlineDepth || !SameEdits(c.Edits, c.Entry.OutlineEdits))
+                Edits: choices.OutlineEdits[i], Outline: parts[i].Outline, Added: choices.Added[i], Pages: pages[i]))
+            .Where(c => c.Title != c.Entry.Title || c.Depth != c.Entry.OutlineDepth || !SameEdits(c.Edits, c.Entry.OutlineEdits)
+                || !c.Added.SequenceEqual(c.Entry.AddedBookmarks))
             .ToList();
         bool renamedFolders = choices.FolderNames.Count != _folderNames.Count
             || choices.FolderNames.Any(f => !_folderNames.TryGetValue(f.Key, out var name) || name != f.Value);
         if (changed.Count == 0 && !renamedFolders && choices.Depth == _outlineDepth && choices.Folders == _folderBookmarks) return;
 
         PushUndo();
-        foreach (var (entry, title, depth, edits, outline) in changed)
+        foreach (var (entry, title, depth, edits, outline, added, pageSizes) in changed)
         {
             entry.Title = title;
             entry.OutlineDepth = depth;
-            // 手直しは、ダイアログを開いたときのしおりに結び付ける（開いている間に変換し直されたら当てない）
+            // 手直しは、ダイアログを開いたときのしおりとページに結び付ける（開いている間に変換し直されたら当てない）
             entry.OutlineChanges = edits.Count == 0 ? null : new OutlineChanges(outline, new Dictionary<string, string?>(edits));
+            entry.PageBookmarks = added.Count == 0 ? null : new PageBookmarks(pageSizes, [.. added]);
             EntryChanged(entry);
         }
         _folderNames.Clear();
@@ -578,6 +591,24 @@ internal sealed partial class MainForm : Form
         _outlineDepth = choices.Depth;
         _folderBookmarks = choices.Folders;
         ShowBookmarkChoice();
+    }
+
+    /// <summary>
+    /// 結合するときに作る目次ページの見本を、作業フォルダに作る。表示中のファイルをつかまれていても困らないよう、毎回別の名前にする
+    /// （作業フォルダは、閉じるときにまとめて消える）。
+    /// </summary>
+    private ConvertedPdf? ContentsPreview(IReadOnlyList<MergePart> parts, MergeOptions options)
+    {
+        try
+        {
+            string path = Path.Combine(_workspace.FolderPath, $"contents-{Guid.NewGuid():N}.pdf");
+            if (PdfMerger.WriteContents(parts, options, path) == 0) return null;
+            return new ConvertedPdf(path, PdfInfo.Read(path).Sizes, [], null);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            return null;
+        }
     }
 
     private static bool SameEdits(IReadOnlyDictionary<string, string?> a, IReadOnlyDictionary<string, string?> b) =>
@@ -590,7 +621,7 @@ internal sealed partial class MainForm : Form
     private void ShowBookmarkChoice()
     {
         string choice = BookmarkDialog.Describe(_outlineDepth, _folderBookmarks,
-            Entries().Any(e => e.OutlineDepth is not null || e.OutlineEdits.Count > 0));
+            Entries().Any(e => e.OutlineDepth is not null || e.OutlineEdits.Count > 0 || e.AddedBookmarks.Count > 0));
         string text = choice.Length > 0 ? "しおりを確認...（既定から変更あり）" : "しおりを確認...";
         if (_bookmarks.Text == text && _bookmarkChoice == choice) return;
         _bookmarks.Text = text;

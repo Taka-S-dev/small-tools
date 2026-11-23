@@ -12,6 +12,7 @@ internal sealed class PageViewer : Form
     private readonly bool _editable;
     private readonly Action<int> _toggle;
     private readonly Action<int, int> _rotate;
+    private readonly Action<int, IWin32Window>? _addBookmark;
     private readonly PdfPageRenderer _renderer = new();
     private readonly System.Windows.Forms.Timer _settle = new() { Interval = 150 };
 
@@ -21,6 +22,7 @@ internal sealed class PageViewer : Form
     private readonly CheckBox _include = new() { Text = "このページを結合する", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 0, 16, 0) };
     private readonly Button _rotateLeft = new() { Text = "左に回転", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(6, 2, 6, 2), Margin = new Padding(0, 0, 4, 0) };
     private readonly Button _rotateRight = new() { Text = "右に回転", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(6, 2, 6, 2), Margin = new Padding(0, 0, 12, 0) };
+    private readonly Button _bookmark = new() { Text = "しおりを付ける...", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(6, 2, 6, 2), Margin = new Padding(0, 0, 12, 0) };
     private readonly Label _keys = new() { AutoSize = true, Anchor = AnchorStyles.Left, ForeColor = SystemColors.GrayText };
     private readonly DoubleBufferedPanel _canvas = new() { Dock = DockStyle.Fill, BackColor = Theme.ViewerBack };
 
@@ -31,13 +33,16 @@ internal sealed class PageViewer : Form
     private bool _updating;
     private Font? _veilFont;
 
-    public PageViewer(FileEntry entry, int page, bool editable, Action<int> toggle, Action<int, int> rotate)
+    /// <param name="addBookmark">(ページ, 名前を聞くダイアログの親) → そのページにしおりを足す。null ならしおりのボタンを出さない。</param>
+    public PageViewer(FileEntry entry, int page, bool editable, Action<int> toggle, Action<int, int> rotate,
+        Action<int, IWin32Window>? addBookmark = null)
     {
         _entry = entry;
         _page = page;
         _editable = editable;
         _toggle = toggle;
         _rotate = rotate;
+        _addBookmark = editable ? addBookmark : null;
 
         SuspendLayout(); // 表示倍率の調整を ResumeLayout まで待たせる（MainForm と同じ）
         Text = entry.FileName;
@@ -53,8 +58,11 @@ internal sealed class PageViewer : Form
         var bar = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, WrapContents = true, Padding = new Padding(10, 8, 10, 8) };
         bar.Controls.AddRange([_prev, _next, _position]);
         if (editable) bar.Controls.AddRange([_include, _rotateLeft, _rotateRight]);
+        if (_addBookmark is not null) bar.Controls.Add(_bookmark);
         bar.Controls.Add(_keys);
-        _keys.Text = editable ? "← → でページ送り・Space で結合の切り替え・R で回転・Esc で閉じる" : "← → でページ送り・Esc で閉じる";
+        _keys.Text = editable
+            ? "← → でページ送り・Space で結合の切り替え・R で回転" + (_addBookmark is not null ? "・B でしおり" : "") + "・Esc で閉じる"
+            : "← → でページ送り・Esc で閉じる";
 
         Controls.Add(_canvas);
         Controls.Add(bar);
@@ -63,6 +71,7 @@ internal sealed class PageViewer : Form
         _next.Click += (_, _) => Go(_page + 1);
         _rotateLeft.Click += (_, _) => Rotate(-90);
         _rotateRight.Click += (_, _) => Rotate(90);
+        _bookmark.Click += (_, _) => AddBookmark();
         _include.CheckedChanged += (_, _) =>
         {
             if (_updating) return;
@@ -123,6 +132,13 @@ internal sealed class PageViewer : Form
         ShowState();
     }
 
+    private void AddBookmark()
+    {
+        if (_addBookmark is null) return;
+        _addBookmark(_page, this);
+        ShowState();
+    }
+
     private void Rotate(int degrees)
     {
         if (!_editable) return;
@@ -146,7 +162,8 @@ internal sealed class PageViewer : Form
         _updating = false;
 
         int turn = Turn;
-        _position.Text = $"{_page + 1} / {PageCount} ページ" + (turn != 0 ? $"（{turn}° 回転）" : "") + (included ? "" : "・結合しない");
+        _position.Text = $"{_page + 1} / {PageCount} ページ" + (turn != 0 ? $"（{turn}° 回転）" : "") + (included ? "" : "・結合しない")
+            + (PreviewPane.MarkOf(_entry, _page) is { } mark ? $"・しおり「{mark}」" : "");
         _position.ForeColor = included ? ForeColor : Theme.Danger;
         _prev.Enabled = _page > 0;
         _next.Enabled = _page < PageCount - 1;
@@ -253,6 +270,9 @@ internal sealed class PageViewer : Form
                 return true;
             case Keys.Shift | Keys.R when _editable:
                 Rotate(-90);
+                return true;
+            case Keys.B when _addBookmark is not null:
+                AddBookmark();
                 return true;
         }
         return base.ProcessCmdKey(ref msg, keyData);

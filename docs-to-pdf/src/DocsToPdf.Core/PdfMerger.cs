@@ -28,6 +28,9 @@ internal sealed record MergePart(string PdfPath, string Title, IReadOnlyList<int
     /// </summary>
     public IReadOnlyDictionary<string, string?> OutlineEdits { get; init; } = NoEdits;
 
+    /// <summary>ページを見て足したしおり。元のしおりと同じ段（一番上）にページ順で入れる。段数の指定では削らない。</summary>
+    public IReadOnlyList<AddedBookmark> Added { get; init; } = [];
+
     public const int AllLevels = int.MaxValue;
     public static readonly IReadOnlyDictionary<string, string?> NoEdits = new Dictionary<string, string?>();
 }
@@ -46,14 +49,36 @@ internal sealed record MergeOptions(bool PageNumbers, bool TableOfContents, bool
     public int? OutlineDepth { get; init; }
 }
 
-internal enum BookmarkKind { Contents, Folder, File, Original }
+internal enum BookmarkKind { Contents, Folder, File, Original, Added }
 
 /// <summary>結合した PDF に付けるしおり 1 件。Page は結合後のページ（0 始まり）。</summary>
 /// <param name="Part">ファイルのしおりと元のしおりなら、そのファイルの番号（parts の何番目か）。ほかは -1。</param>
 /// <param name="FolderKey">フォルダの段なら、そのフォルダの Key。ほかは null。</param>
 /// <param name="OutlinePath">元のしおりなら、元のファイルのしおりの中での位置（MergePart.OutlineEdits の鍵）。ほかは null。</param>
+/// <param name="AddedIndex">足したしおりなら、MergePart.Added の何番目か。ほかは -1。</param>
+/// <param name="SourcePage">ファイル・元のしおり・足したしおりなら、元のファイルでのページ（0 始まり）。ほかは -1。</param>
 internal sealed record Bookmark(string Title, int Page, BookmarkKind Kind, IReadOnlyList<Bookmark> Children,
-    int Part = -1, string? FolderKey = null, string? OutlinePath = null);
+    int Part = -1, string? FolderKey = null, string? OutlinePath = null, int AddedIndex = -1, int SourcePage = -1);
+
+/// <summary>しおりの木をたどる手伝い。</summary>
+internal static class Bookmarks
+{
+    /// <summary>
+    /// そのファイルの、結合した PDF の page（0 始まり）を含むしおり。page かそれより前から始まるもののうち、
+    /// 木の上から順に見て最後のもの（いちばん細かい見出し）を返す。そのファイルのしおりがそのページより後ろからしか始まらなければ null。
+    /// </summary>
+    public static Bookmark? Covering(IEnumerable<Bookmark> nodes, int part, int page)
+    {
+        Bookmark? found = null;
+        foreach (var node in nodes)
+        {
+            if (node.Part == part && node.Kind is BookmarkKind.File or BookmarkKind.Original or BookmarkKind.Added && node.Page <= page)
+                found = node;
+            if (Covering(node.Children, part, page) is { } inner) found = inner;
+        }
+        return found;
+    }
+}
 
 /// <summary>元のしおりの位置の書き方。上から何番目かを段ごとに "/" でつなぐ（"0/2" は 1 番目の下の 3 番目）。</summary>
 internal static class OutlinePaths
@@ -127,6 +152,7 @@ internal static class PdfMerger
             AddOriginal(originals, part.Outline, positions, 1, depth, part.OutlineEdits, i, "");
             // 段数で削ったあとに、ファイルの先頭を指す 1 件だけが残ったなら、ファイルのしおりと重なるので付けない
             if (options.FileBookmarks && originals is [{ Children.Count: 0 } only] && only.Page == first) originals.Clear();
+            AddAdded(originals, part.Added, positions, i);
             if (!options.FileBookmarks)
             {
                 top.AddRange(originals);
@@ -146,7 +172,8 @@ internal static class PdfMerger
                 (d == 0 ? top : open[d - 1].Children).Add(new Bookmark(folder.Name, first, BookmarkKind.Folder, children, FolderKey: folder.Key));
                 open.Add((folder.Key, children));
             }
-            (open.Count == 0 ? top : open[^1].Children).Add(new Bookmark(part.Title, first, BookmarkKind.File, originals, i));
+            int firstSource = positions.First(p => p.Value == first).Key;
+            (open.Count == 0 ? top : open[^1].Children).Add(new Bookmark(part.Title, first, BookmarkKind.File, originals, i, SourcePage: firstSource));
         }
         return Collapse(top);
     }
@@ -162,6 +189,21 @@ internal static class PdfMerger
                 ? only
                 : node with { Children = children };
         }).ToList();
+
+    /// <summary>
+    /// 足したしおりを、一番上の段にページ順で入れる。同じページに元のしおりがあれば、その後ろに置く。
+    /// 結合に含めないページのしおりは付けない。
+    /// </summary>
+    private static void AddAdded(List<Bookmark> target, IReadOnlyList<AddedBookmark> added, Dictionary<int, int> positions, int part)
+    {
+        for (int k = 0; k < added.Count; k++)
+        {
+            if (!positions.TryGetValue(added[k].Page, out int page)) continue;
+            int at = target.FindIndex(b => b.Page > page);
+            target.Insert(at < 0 ? target.Count : at,
+                new Bookmark(added[k].Title, page, BookmarkKind.Added, [], part, AddedIndex: k, SourcePage: added[k].Page));
+        }
+    }
 
     /// <param name="positions">元のページ番号 → 結合後のページ。結合に含めなかったページは入っていない。</param>
     /// <param name="level">nodes の段（元のしおりの一番上が 1）。maxDepth を超える段は付けない。</param>
@@ -185,7 +227,7 @@ internal static class PdfMerger
             AddOriginal(children, node.Children, positions, level + 1, maxDepth, edits, part, path);
             // 行き先のページが結合に含まれない項目は付けない（子は残せるものだけ同じ階層に付ける）
             if (positions.TryGetValue(node.PageIndex, out int page))
-                target.Add(new Bookmark(title, page, BookmarkKind.Original, children, part, OutlinePath: path));
+                target.Add(new Bookmark(title, page, BookmarkKind.Original, children, part, OutlinePath: path, SourcePage: node.PageIndex));
             else target.AddRange(children);
         }
     }
@@ -274,6 +316,23 @@ internal static class PdfMerger
             DrawPageNumbers(output, blanks);
     }
 
+    /// <summary>
+    /// 目次ページだけの PDF を書く（しおりの確認で、結合する前に目次ページを見せるため）。
+    /// 載る名前とページ番号は結合と同じ。行のリンクは、飛び先のページがないので付けない。
+    /// </summary>
+    /// <returns>目次のページ数。ファイルがなければ 0 で、何も書かない。</returns>
+    public static int WriteContents(IReadOnlyList<MergePart> parts, MergeOptions options, string outputPath)
+    {
+        int count = TocPageCount(parts.Count);
+        if (count == 0) return 0;
+        var (_, starts, _) = Plan(parts.Select(p => p.Pages.Count).ToList(), options with { TableOfContents = true });
+        using var output = new PdfDocument();
+        var pages = Enumerable.Range(0, count).Select(_ => AddBlank(output, A4Width, A4Height)).ToList();
+        DrawToc(output, pages, parts, starts, links: false);
+        output.Save(outputPath);
+        return count;
+    }
+
     private static PdfPage AddBlank(PdfDocument output, double width, double height)
     {
         var page = output.AddPage();
@@ -292,7 +351,7 @@ internal static class PdfMerger
         }
     }
 
-    private static void DrawToc(PdfDocument output, List<PdfPage> tocPages, IReadOnlyList<MergePart> parts, int[] starts)
+    private static void DrawToc(PdfDocument output, List<PdfPage> tocPages, IReadOnlyList<MergePart> parts, int[] starts, bool links = true)
     {
         PdfFonts.EnsureRegistered();
         var titleFont = new XFont(PdfFonts.Family, 18);
@@ -326,6 +385,7 @@ internal static class PdfMerger
                     g.DrawLine(leaderPen, leaderStart, baseline - 3, leaderEnd, baseline - 3);
 
                 // 行のどこを押しても、そのファイルの先頭ページへ飛ぶ
+                if (!links) continue;
                 var area = g.Transformer.WorldToDefaultPage(new XRect(TocMargin, top, right - TocMargin, TocRowHeight));
                 page.AddDocumentLink(new PdfRectangle(area), starts[row] + 1);
             }

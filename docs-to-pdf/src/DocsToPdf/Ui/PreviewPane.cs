@@ -171,6 +171,8 @@ internal sealed class PageStrip : ScrollableControl
     private readonly ToolStripMenuItem _menuRight = new("右に 90° 回転");
     private readonly ToolStripMenuItem _menuLeft = new("左に 90° 回転");
     private readonly ToolStripMenuItem _menuToggle = new();
+    private readonly ToolStripSeparator _bookmarkSeparator = new();
+    private readonly ToolStripMenuItem _menuBookmark = new("このページにしおりを付ける...");
     private readonly Font _symbolFont;
 
     private ConvertedPdf? _pdf;
@@ -189,6 +191,8 @@ internal sealed class PageStrip : ScrollableControl
     private IReadOnlyDictionary<int, int> _starts = new Dictionary<int, int>();
     /// <summary>選択モードで選ばれているページ。null なら選択モードではない（ページを選んで保存する画面で使う）。</summary>
     private IReadOnlySet<int>? _selected;
+    /// <summary>今見ている箇所として枠で囲むページ（しおりの確認で、木で選んだしおりのページ）。なければ -1。</summary>
+    private int _current = -1;
     private int _hover = -1;
     private Spot _hoverSpot;
     private int _menuPage = -1;
@@ -210,7 +214,9 @@ internal sealed class PageStrip : ScrollableControl
             EnsureRendered();
         };
 
-        _menu.Items.AddRange([_menuZoom, new ToolStripSeparator(), _menuRight, _menuLeft, new ToolStripSeparator(), _menuToggle]);
+        _menu.Items.AddRange([_menuZoom, new ToolStripSeparator(), _menuRight, _menuLeft, new ToolStripSeparator(), _menuToggle,
+            _bookmarkSeparator, _menuBookmark]);
+        _menuBookmark.Click += (_, _) => { if (_menuPage >= 0) PageBookmarkRequested?.Invoke(_menuPage); };
         _menuZoom.Click += (_, _) => { if (_menuPage >= 0) PageZoomRequested?.Invoke(_menuPage); };
         _menuRight.Click += (_, _) => { if (_menuPage >= 0) PageRotateRequested?.Invoke(_menuPage, 90); };
         _menuLeft.Click += (_, _) => { if (_menuPage >= 0) PageRotateRequested?.Invoke(_menuPage, -90); };
@@ -223,6 +229,27 @@ internal sealed class PageStrip : ScrollableControl
     public event Action<int, int>? PageRotateRequested;
     /// <summary>区切りモードで「ここから分ける」「区切りを外す」が押されたページ。</summary>
     public event Action<int>? PageCutToggled;
+    /// <summary>右クリックの「このページにしおりを付ける」が押されたページ。受け取る側があるときだけ項目を出す。</summary>
+    public event Action<int>? PageBookmarkRequested;
+
+    /// <summary>
+    /// 見るだけのときも、ページを押したら（拡大ではなく）PageClicked を知らせる。拡大は虫眼鏡のボタンだけになる
+    /// （しおりの確認で、押したページのしおりを選ぶのに使う）。
+    /// </summary>
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    public bool PageClickSelects { get; set; }
+
+    /// <summary>ページに乗せたときの虫眼鏡（拡大）のボタンを出すか。拡大して見せられないページ（作る前の目次）では false にする。</summary>
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    public bool ZoomEnabled { get; set; } = true;
+
+    /// <summary>右クリックの「このページにしおりを付ける」を出すか（受け取る側があるときだけ出る。作成中は false にする）。</summary>
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    public bool BookmarksEnabled { get; set; } = true;
+
+    /// <summary>ページに付いているしおりの名前（ページの下に出す）。null か空なら出さない。</summary>
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    public Func<int, string?>? PageMark { get; set; }
 
     /// <summary>ページの下に出す番号。null なら元の PDF でのページ番号（1 始まり）。</summary>
     [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
@@ -243,6 +270,17 @@ internal sealed class PageStrip : ScrollableControl
     public void SetSelection(IReadOnlySet<int>? selected)
     {
         _selected = selected;
+        Invalidate();
+    }
+
+    /// <summary>
+    /// そのページを枠で囲む（選択モードの枠とは違い、チェックの印は付けない）。-1 で外す。
+    /// しおりの確認で、木で選んだしおりがどのページを指すかを見せるのに使う。
+    /// </summary>
+    public void SetCurrent(int page)
+    {
+        if (_current == page) return;
+        _current = page;
         Invalidate();
     }
 
@@ -490,7 +528,7 @@ internal sealed class PageStrip : ScrollableControl
                 if (_interactive || _selected is not null) g.DrawRectangle(hoverBorder, rect);
                 else g.DrawRectangle(border, rect.X, rect.Y, rect.Width - 1, rect.Height - 1);
                 var (zoom, rotate) = ButtonsOf(rect);
-                DrawButton(g, zoom, PageGlyphs.Zoom, _hoverSpot == Spot.Zoom);
+                if (ZoomEnabled) DrawButton(g, zoom, PageGlyphs.Zoom, _hoverSpot == Spot.Zoom);
                 if (_interactive) DrawButton(g, rotate, PageGlyphs.RotateRight, _hoverSpot == Spot.Rotate);
                 if (CutTextOf(i) is { } cutText) DrawTextButton(g, CutButtonOf(rect, cutText), cutText, _hoverSpot == Spot.Cut);
             }
@@ -502,6 +540,7 @@ internal sealed class PageStrip : ScrollableControl
             // 選択モードで選ばれたページは、太い枠と左上のチェックの印で見せる
             bool picked = _selected?.Contains(i) == true;
             if (picked) DrawPicked(g, rect);
+            else if (i == _current) DrawCurrent(g, rect);
 
             // 新しいファイルが始まるページは、左に縦線を引き、下に「ここから N つ目」と出す
             bool starts = _starts.TryGetValue(i, out int fileNumber);
@@ -515,10 +554,21 @@ internal sealed class PageStrip : ScrollableControl
             var label = new Rectangle(rect.X, rect.Bottom, rect.Width, LabelHeight);
             int turn = TurnOf(i);
             string number = PageLabel?.Invoke(i) ?? $"{i + 1}";
-            string text = number + (picked ? "・選択" : "") + (starts ? $"・ここから {fileNumber} つ目" : "") + (turn != 0 ? $"・{turn}° 回転" : "") + (included ? "" : "（結合しない）");
-            TextRenderer.DrawText(g, text, Font, label, !included ? Theme.Danger : starts || picked ? Theme.Link : ForeColor,
+            string? mark = PageMark?.Invoke(i);
+            bool marked = !string.IsNullOrEmpty(mark);
+            string text = number + (picked ? "・選択" : "") + (starts ? $"・ここから {fileNumber} つ目" : "") + (marked ? $"・しおり「{mark}」" : "")
+                + (turn != 0 ? $"・{turn}° 回転" : "") + (included ? "" : "（結合しない）");
+            TextRenderer.DrawText(g, text, Font, label, !included ? Theme.Danger : starts || picked || marked ? Theme.Link : ForeColor,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
         }
+    }
+
+    /// <summary>今見ているページの印: ページを囲む太い枠だけ。</summary>
+    private void DrawCurrent(Graphics g, Rectangle page)
+    {
+        int thick = LogicalToDeviceUnits(3);
+        using var frame = new Pen(SystemColors.Highlight, thick);
+        g.DrawRectangle(frame, Rectangle.Inflate(page, thick / 2 + 1, thick / 2 + 1));
     }
 
     /// <summary>選ばれたページの印: ページを囲む太い枠と、左上の丸いチェック。</summary>
@@ -668,7 +718,7 @@ internal sealed class PageStrip : ScrollableControl
         {
             var rect = OnScreen(_pages[i]);
             var (zoom, rotate) = ButtonsOf(rect);
-            if (zoom.Contains(point)) return (i, Spot.Zoom);
+            if (ZoomEnabled && zoom.Contains(point)) return (i, Spot.Zoom);
             if (CutTextOf(i) is { } cutText && CutButtonOf(rect, cutText).Contains(point)) return (i, Spot.Cut);
             if (_interactive && rotate.Contains(point)) return (i, Spot.Rotate);
             rect.Height += LabelHeight;
@@ -680,7 +730,8 @@ internal sealed class PageStrip : ScrollableControl
     private void UpdateHover(Point point)
     {
         var (page, spot) = HitTest(point);
-        Cursor = spot is Spot.Zoom or Spot.Rotate or Spot.Cut || (spot == Spot.Page && (_interactive || _selected is not null)) ? Cursors.Hand : Cursors.Default;
+        Cursor = spot is Spot.Zoom or Spot.Rotate or Spot.Cut || (spot == Spot.Page && (_interactive || _selected is not null || PageClickSelects))
+            ? Cursors.Hand : Cursors.Default;
         if (page == _hover && spot == _hoverSpot) return;
         _hover = page;
         _hoverSpot = spot;
@@ -710,6 +761,8 @@ internal sealed class PageStrip : ScrollableControl
             _menuPage = page;
             // 見るだけのときは、使えない操作を出さない（拡大だけにする）
             foreach (ToolStripItem item in _menu.Items) item.Visible = _interactive || item == _menuZoom;
+            // 見るだけの画面（しおりの確認）でも付けられるよう、結合の切り替えとは別に決める
+            _bookmarkSeparator.Visible = _menuBookmark.Visible = BookmarksEnabled && PageBookmarkRequested is not null;
             _menuToggle.Text = _included.Contains(page) ? "このページを結合しない" : "このページを結合する";
             _menu.Show(this, e.Location);
             return;
@@ -724,7 +777,7 @@ internal sealed class PageStrip : ScrollableControl
             case Spot.Rotate:
                 PageRotateRequested?.Invoke(page, 90);
                 break;
-            case Spot.Page when _interactive || _selected is not null:
+            case Spot.Page when _interactive || _selected is not null || PageClickSelects:
                 PageClicked?.Invoke(page);
                 break;
             case Spot.Cut:
@@ -784,7 +837,15 @@ internal sealed class PreviewPane : UserControl
         {
             if (_entry is not null) PageRotateRequested?.Invoke(_entry, index, degrees);
         };
+        _strip.PageBookmarkRequested += index =>
+        {
+            if (_entry is not null) PageBookmarkRequested?.Invoke(_entry, index);
+        };
     }
+
+    /// <summary>そのページに足したしおりの名前（いくつかあれば「・」でつなぐ）。なければ null。</summary>
+    public static string? MarkOf(FileEntry entry, int page) =>
+        string.Join("・", entry.AddedBookmarks.Where(b => b.Page == page).Select(b => b.Title)) is { Length: > 0 } mark ? mark : null;
 
     /// <summary>
     /// 見出しの高さは文字の高さ（すでに表示倍率どおり）から決めるので、フォームの倍率の調整が済んだあと、
@@ -798,6 +859,7 @@ internal sealed class PreviewPane : UserControl
     }
 
     public event Action<FileEntry, int>? PageToggled;
+    public event Action<FileEntry, int>? PageBookmarkRequested;
     public event Action<FileEntry, int>? PageZoomRequested;
     public event Action<FileEntry, int, int>? PageRotateRequested;
     public event Action<FileEntry>? ChooseSheetsRequested;
@@ -870,7 +932,9 @@ internal sealed class PreviewPane : UserControl
                     + (rotated > 0 ? $"・{rotated} ページを回転" : "");
                 string hint = locked
                     ? "作成中は変更できません。押すと拡大表示。"
-                    : "押すと結合から外す／戻す。右上のボタンで拡大・回転。";
+                    : "押すと結合から外す／戻す。右上のボタンで拡大・回転。右クリックでしおりを付ける。";
+                _strip.PageMark = page => MarkOf(entry, page);
+                _strip.BookmarksEnabled = !locked;
                 _strip.ShowDocument(pdf, entry.SelectedPages, entry.Rotations, interactive: !locked, hint);
                 if (!locked)
                 {

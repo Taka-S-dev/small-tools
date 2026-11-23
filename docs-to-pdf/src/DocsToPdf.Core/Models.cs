@@ -10,6 +10,18 @@ internal sealed record SheetInfo(string Name, int Pages, bool Included);
 /// <summary>しおり 1 件。PageIndex はその PDF の中での 0 始まりのページ位置。</summary>
 internal sealed record OutlineNode(string Title, int PageIndex, IReadOnlyList<OutlineNode> Children);
 
+/// <summary>利用者がページを見て足したしおり。Page は元の PDF の中での 0 始まりのページ位置。</summary>
+internal sealed record AddedBookmark(string Title, int Page);
+
+/// <summary>
+/// 足したしおりと、足したときのページの並び（枚数と大きさ）。
+/// ページで当てるので、変換し直してページの並びが変わったら当てない（別のページを指してしまう）。
+/// </summary>
+internal sealed record PageBookmarks(IReadOnlyList<PageSize> Pages, IReadOnlyList<AddedBookmark> Items)
+{
+    public bool AppliesTo(IReadOnlyList<PageSize> pages) => ReferenceEquals(Pages, pages) || Pages.SequenceEqual(pages);
+}
+
 /// <summary>
 /// 元のしおりの手直し（MergePart.OutlineEdits）と、手直ししたときの元のしおり。
 /// 位置で手直しを当てるので、変換し直してしおりが変わったら当てない（別の見出しに当たってしまう）。
@@ -123,6 +135,12 @@ internal sealed class FileEntry
     public int? OutlineDepth { get; set; }
     /// <summary>元のしおりの手直し。null ならなし。</summary>
     public OutlineChanges? OutlineChanges { get; set; }
+    /// <summary>ページを見て足したしおり。null ならなし。</summary>
+    public PageBookmarks? PageBookmarks { get; set; }
+
+    /// <summary>今の変換結果に当てられる、足したしおり。</summary>
+    public IReadOnlyList<AddedBookmark> AddedBookmarks =>
+        PageBookmarks is { } added && Converted is { } pdf && added.AppliesTo(pdf.PageSizes) ? added.Items : [];
 
     /// <summary>今の変換結果に当てられる、元のしおりの手直し。</summary>
     public IReadOnlyDictionary<string, string?> OutlineEdits =>

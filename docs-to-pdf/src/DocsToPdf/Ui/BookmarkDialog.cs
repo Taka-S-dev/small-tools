@@ -23,15 +23,22 @@ internal sealed class BookmarkChoices
     /// <summary>ファイルの番号 → 元のしおりの手直し（MergePart.OutlineEdits と同じ意味）。</summary>
     public Dictionary<int, Dictionary<string, string?>> OutlineEdits { get; } = [];
 
+    /// <summary>ファイルの番号 → ページを見て足したしおり（MergePart.Added と同じ意味）。</summary>
+    public Dictionary<int, List<AddedBookmark>> Added { get; } = [];
+
     /// <summary>そのファイルの手直しを書き込む先（なければ作る）。</summary>
     public Dictionary<string, string?> EditsOf(int part) =>
         OutlineEdits.TryGetValue(part, out var edits) ? edits : OutlineEdits[part] = [];
 }
 
+/// <summary>しおりの確認で右に並べる、1 ファイルのページ。Pages は結合に使うページ（元のファイルでの番号）。</summary>
+internal sealed record BookmarkPages(ConvertedPdf Pdf, IReadOnlyList<int> Pages, IReadOnlyDictionary<int, int> Rotations);
+
 /// <summary>
-/// 結合した PDF に付くしおりを、作る前に木の形で見せる。ファイル・フォルダ・元のしおりの名前はその場で変えられ、
-/// 元のしおりは 1 件ずつ外せる。元のしおりを何段まで付けるかは、全体とファイルごとに選べる。
-/// 変えるたびに木を作り直す（結合と同じ決まりで求める）。
+/// 結合した PDF に付くしおりを、作る前に木の形で見せる。右には、木で選んだファイルのページが並び、
+/// ページを右クリックするとそのページにしおりを足せる（足したしおりはすぐ木に出て、そのまま名前を書ける）。
+/// ファイル・フォルダ・しおりの名前はその場で変えられ、しおりは 1 件ずつ外せる。
+/// 元のしおりを何段まで付けるかは、全体とファイルごとに選べる。変えるたびに木を作り直す（結合と同じ決まりで求める）。
 /// </summary>
 internal sealed class BookmarkDialog : Form
 {
@@ -44,6 +51,21 @@ internal sealed class BookmarkDialog : Form
 
     private readonly Func<BookmarkChoices, IReadOnlyList<Bookmark>> _build;
     private readonly BookmarkChoices _choices;
+    private readonly Func<int, BookmarkPages?> _pagesOf;
+    private readonly Func<BookmarkChoices, ConvertedPdf?>? _contents;
+    /// <summary>目次ページを並べているときの _shownPart。</summary>
+    private const int ContentsPart = -2;
+    private readonly Action<int, int, IWin32Window>? _zoom;
+    private readonly PageStrip _strip = new() { Dock = DockStyle.Fill };
+    private readonly Label _pagesTitle = new() { AutoSize = true, AutoEllipsis = false, Margin = new Padding(0, 0, 0, 4) };
+    private readonly Label _pagesNote = new() { AutoSize = true, Margin = new Padding(0, 4, 0, 0) };
+    private readonly SplitContainer _split = new() { Dock = DockStyle.Fill, Orientation = Orientation.Vertical };
+    /// <summary>右に並べているファイルの番号。まだなければ -1。</summary>
+    private int _shownPart = -1;
+    /// <summary>右のページ（元のファイルでの番号）→ 結合した PDF でのページ番号（1 始まり）。結合しないページは入っていない。</summary>
+    private Dictionary<int, int> _mergedNumbers = [];
+    /// <summary>木を作り直している間や、右のページを押して行を選んだときは、選び直しで右のページを動かさない。</summary>
+    private bool _rebuilding;
     private readonly ComboBox _depth = new() { DropDownStyle = ComboBoxStyle.DropDownList, Anchor = AnchorStyles.Left, Width = 120 };
     private readonly CheckBox _folders = new()
     {
@@ -65,10 +87,17 @@ internal sealed class BookmarkDialog : Form
     /// <param name="build">選び方 → できあがるしおり。</param>
     /// <param name="choices">今の選び方。ダイアログの中で書き換えるので、呼ぶ側は写しを渡す。</param>
     /// <param name="note">一覧のうち、しおりに入らないファイルがあるときの説明（変換中や、結合できないもの）。なければ空。</param>
-    public BookmarkDialog(Func<BookmarkChoices, IReadOnlyList<Bookmark>> build, BookmarkChoices choices, string note)
+    /// <param name="pagesOf">ファイルの番号 → 右に並べるページ。並べられなければ null。</param>
+    /// <param name="zoom">(ファイルの番号, ページ, 親) → ページを大きく見せる。null なら見せない。</param>
+    /// <param name="contents">選び方 → 結合するときに作る目次ページの見本。目次を付けないときは null。</param>
+    public BookmarkDialog(Func<BookmarkChoices, IReadOnlyList<Bookmark>> build, BookmarkChoices choices, string note,
+        Func<int, BookmarkPages?> pagesOf, Action<int, int, IWin32Window>? zoom = null, Func<BookmarkChoices, ConvertedPdf?>? contents = null)
     {
+        _contents = contents;
         _build = build;
         _choices = choices;
+        _pagesOf = pagesOf;
+        _zoom = zoom;
         SuspendLayout(); // 表示倍率の調整を ResumeLayout まで待たせる（MainForm と同じ）
         Text = "しおりの確認";
         FormBorderStyle = FormBorderStyle.Sizable;
@@ -79,13 +108,9 @@ internal sealed class BookmarkDialog : Form
         StartPosition = FormStartPosition.CenterParent;
         AutoScaleDimensions = new SizeF(96F, 96F);
         AutoScaleMode = AutoScaleMode.Dpi;
-        ClientSize = new Size(480, 560);
-        MinimumSize = new Size(360, 340);
+        ClientSize = new Size(980, 640);
+        MinimumSize = new Size(640, 400);
 
-        _icons.ImageSize = SystemInformation.SmallIconSize;
-        _icons.Images.Add(new Bitmap(_icons.ImageSize.Width, _icons.ImageSize.Height));
-        using (var folder = ShellIcons.ForFolder()) _icons.Images.Add(folder?.ToBitmap() ?? new Bitmap(_icons.ImageSize.Width, _icons.ImageSize.Height));
-        _tree.ImageList = _icons;
         _tree.ContextMenuStrip = _menu;
 
         foreach (var (text, _) in Depths) _depth.Items.Add(text);
@@ -112,20 +137,40 @@ internal sealed class BookmarkDialog : Form
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.Controls.Add(depthRow);
         root.Controls.Add(_folders);
-        root.Controls.Add(new Label { Text = "できあがるしおり（括弧の中は、結合した PDF でのページ）", AutoSize = true, Margin = new Padding(0, 6, 0, 4) });
-        root.Controls.Add(_tree);
+        // 列の幅を指定しないと中身に合わせて広がり、右のページが領域からはみ出すので、領域いっぱいに決める
+        var treePane = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, Margin = Padding.Empty, Padding = new Padding(0, 0, 4, 0) };
+        treePane.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        treePane.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        treePane.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        treePane.Controls.Add(new Label { Text = "できあがるしおり（括弧の中は、結合した PDF でのページ）", AutoSize = true, Margin = new Padding(0, 6, 0, 4) });
+        treePane.Controls.Add(_tree);
+        _split.Panel1.Controls.Add(treePane);
+
+        var pagesPane = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, Margin = Padding.Empty, Padding = new Padding(4, 0, 0, 0) };
+        pagesPane.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        pagesPane.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        pagesPane.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        pagesPane.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _pagesTitle.Margin = new Padding(0, 6, 0, 4);
+        pagesPane.Controls.Add(_pagesTitle);
+        pagesPane.Controls.Add(_strip);
+        pagesPane.Controls.Add(_pagesNote);
+        _split.Panel2.Controls.Add(pagesPane);
+        root.Controls.Add(_split);
+
         root.Controls.Add(new Label
         {
-            Text = "名前は F2 で変えられ、元のしおりは Delete で外せます。右クリックで、ファイルごとに元のしおりを何段まで付けるかも選べます。",
+            Text = "右のページを押すと、そのページのしおりを選びます（拡大は虫眼鏡）。右クリックすると、そのページにしおりを付けられます。"
+                + "名前は F2 で変えられ、元のしおりと付けたしおりは Delete で外せます。"
+                + "木の右クリックで、ファイルごとに元のしおりを何段まで付けるかも選べます。",
             AutoSize = true,
-            MaximumSize = new Size(456, 0),
+            MaximumSize = new Size(940, 0),
             ForeColor = SystemColors.GrayText,
             Margin = new Padding(0, 6, 0, 0),
         });
@@ -160,7 +205,8 @@ internal sealed class BookmarkDialog : Form
         {
             _menuByMouse = false; // この後の Shift+F10 は、選んでいる行のメニューにする
             if (e.KeyCode == Keys.F2 && _tree.SelectedNode is { } node) BeginRename(node);
-            else if (e.KeyCode == Keys.Delete && _tree.SelectedNode is { Tag: Bookmark { Kind: BookmarkKind.Original } } original) Drop(original);
+            else if (e.KeyCode == Keys.Delete && _tree.SelectedNode is { Tag: Bookmark { Kind: BookmarkKind.Original or BookmarkKind.Added } } original)
+                Drop(original);
         };
         // 右クリックした行を選んでから、メニューを開く（TreeView は右クリックでは選ばない）。
         // 行のないところで右クリックしたときは、前に選んでいた行のメニューを出さない
@@ -172,9 +218,216 @@ internal sealed class BookmarkDialog : Form
             if (_menuTarget is not null) _tree.SelectedNode = _menuTarget;
         };
         _menu.Opening += OnMenuOpening;
+        _tree.AfterSelect += (_, e) =>
+        {
+            if (!_rebuilding && e.Node is not null) ShowPagesOf(e.Node, scroll: true);
+        };
+        _strip.PageClickSelects = true;
+        _strip.PageClicked += SelectBookmarkAt;
+        _strip.PageMark = page => string.Join("・", (_choices.Added.GetValueOrDefault(_shownPart) ?? []).Where(b => b.Page == page).Select(b => b.Title));
+        _strip.PageBookmarkRequested += AddAt;
+        _strip.PageZoomRequested += page =>
+        {
+            if (_shownPart >= 0) _zoom?.Invoke(_shownPart, page, this);
+        };
         ResumeLayout(false);
         PerformLayout();
         Rebuild();
+        // 最初のファイルのページを並べておく
+        if (FirstFile(_tree.Nodes) is { } first)
+        {
+            _tree.SelectedNode = first;
+            ShowPagesOf(first, scroll: false);
+        }
+    }
+
+    protected override void OnLoad(EventArgs e)
+    {
+        base.OnLoad(e);
+        // 表示倍率の調整が済んだ幅で、左（しおり）と右（ページ）を分ける
+        _split.SplitterDistance = _split.Width * 45 / 100;
+        _tree.Indent = LogicalToDeviceUnits(16);
+        LoadIcons();
+        FitRows();
+    }
+
+    // 表示倍率の違う画面へ動かしたら、アイコンと行の高さを合わせ直す
+    protected override void OnDpiChanged(DpiChangedEventArgs e)
+    {
+        base.OnDpiChanged(e);
+        _tree.Indent = LogicalToDeviceUnits(16);
+        LoadIcons();
+        FitRows();
+    }
+
+    /// <summary>
+    /// フォルダのアイコンを、このダイアログがいる画面の表示倍率の大きさで用意する。
+    /// SystemInformation.SmallIconSize は Windows 全体の倍率で決まり、倍率の違う画面では大きすぎて行が間延びする。
+    /// </summary>
+    private void LoadIcons()
+    {
+        var size = new Size(LogicalToDeviceUnits(16), LogicalToDeviceUnits(16));
+        bool attached = _tree.ImageList is not null;
+        _tree.ImageList = null;
+        _icons.Images.Clear();
+        _icons.ImageSize = size;
+        _icons.Images.Add(new Bitmap(size.Width, size.Height)); // NoIcon: 幅をそろえるための空の絵
+        using (var folder = ShellIcons.ForFolder()) _icons.Images.Add(folder?.ToBitmap() ?? new Bitmap(size.Width, size.Height));
+        if (attached) _tree.ImageList = _icons;
+    }
+
+    /// <summary>
+    /// 行の高さを、文字（とフォルダのアイコン）が収まる高さにする。指定しないと既定の高さが大きく、間延びして見える。
+    /// アイコンの一覧を付け外しすると高さが戻るので、そのたびに呼ぶ。
+    /// </summary>
+    private void FitRows()
+    {
+        if (!IsHandleCreated) return;
+        int height = _tree.Font.Height + LogicalToDeviceUnits(6);
+        if (_tree.ImageList is not null) height = Math.Max(height, _icons.ImageSize.Height + LogicalToDeviceUnits(4));
+        _tree.ItemHeight = height;
+    }
+
+    private static TreeNode? FirstFile(TreeNodeCollection nodes)
+    {
+        foreach (TreeNode node in nodes)
+        {
+            if (node.Tag is Bookmark { Kind: BookmarkKind.File }) return node;
+            if (FirstFile(node.Nodes) is { } found) return found;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// その行のファイル（フォルダなら中の最初のファイル）のページを右に並べ、行のしおりのページまで動かして枠で囲む。
+    /// </summary>
+    private void ShowPagesOf(TreeNode node, bool scroll)
+    {
+        var target = node.Tag is Bookmark { Kind: BookmarkKind.Folder } ? FirstFile(node.Nodes) : node;
+        if (target?.Tag is not Bookmark { Part: >= 0 } bookmark)
+        {
+            // 目次のように、元のファイルのページを指さない行。何も変わらないと理由が分からないので、説明を出す
+            _strip.SetCurrent(-1);
+            if (target?.Tag is Bookmark { Kind: BookmarkKind.Contents }) ShowContents();
+            return;
+        }
+        ShowPagesNote("", warning: false);
+        if (bookmark.Part != _shownPart)
+        {
+            _shownPart = bookmark.Part;
+            _strip.BookmarksEnabled = true;
+            _strip.ZoomEnabled = _zoom is not null;
+            var file = FileNodeOf(target);
+            _pagesTitle.Text = $"{(file?.Tag as Bookmark)?.Title} のページ（番号は木と同じ、結合した PDF でのページ。右クリックでしおりを付ける）";
+            if (_pagesOf(bookmark.Part) is { } pages)
+            {
+                // ページの下の番号を、木の括弧の中と同じ「結合した PDF でのページ」にそろえる。
+                // ファイルのしおりのページが、そのファイルで使う最初のページにあたり、そこから使う順に続く
+                int start = (file?.Tag as Bookmark)?.Page ?? 0;
+                _mergedNumbers = [];
+                for (int k = 0; k < pages.Pages.Count; k++) _mergedNumbers.TryAdd(pages.Pages[k], start + k + 1);
+                _strip.PageLabel = page => _mergedNumbers.TryGetValue(page, out int number) ? $"{number}" : "-";
+                _strip.ShowDocument(pages.Pdf, pages.Pages, pages.Rotations, interactive: false, hint: "");
+            }
+            else
+                _strip.ShowMessage("ページを表示できません");
+        }
+        _strip.SetCurrent(bookmark.SourcePage);
+        if (scroll && bookmark.SourcePage >= 0) _strip.ScrollToPage(bookmark.SourcePage);
+    }
+
+    /// <summary>
+    /// 結合するときに作る目次ページを、今の名前で作って右に並べる（名前を変えたら作り直す）。
+    /// 目次ページにはしおりを付けられないので、右クリックの項目は出さない。
+    /// </summary>
+    private void ShowContents()
+    {
+        _shownPart = ContentsPart;
+        _strip.BookmarksEnabled = false;
+        _strip.ZoomEnabled = false; // 作る前の目次は、拡大の画面では開けない
+        _pagesTitle.Text = "目次のページ（結合するときに作る。番号は結合した PDF でのページ）";
+        _mergedNumbers = [];
+        if (_contents?.Invoke(_choices) is { } pdf)
+        {
+            for (int i = 0; i < pdf.PageCount; i++) _mergedNumbers[i] = i + 1;
+            _strip.PageLabel = page => $"{page + 1}";
+            _strip.ShowDocument(pdf, Enumerable.Range(0, pdf.PageCount), FileEntry.NoRotations, interactive: false, hint: "");
+            _strip.SetCurrent(0);
+            ShowPagesNote("", warning: false);
+        }
+        else
+        {
+            _strip.ShowMessage("目次のページを作れませんでした");
+        }
+    }
+
+    /// <summary>右のページを押したら、そのページを含むしおりを木で選び、押したページに枠を付ける（ページは動かさない）。</summary>
+    private void SelectBookmarkAt(int page)
+    {
+        if (_shownPart == ContentsPart)
+        {
+            if (Find(_tree.Nodes, b => b.Kind == BookmarkKind.Contents) is { } contents) SelectQuietly(contents);
+            _strip.SetCurrent(page);
+            return;
+        }
+        if (_shownPart < 0 || !_mergedNumbers.TryGetValue(page, out int number)) return; // 結合しないページ
+        var roots = _tree.Nodes.Cast<TreeNode>().Select(n => n.Tag).OfType<Bookmark>().ToList();
+        if (Bookmarks.Covering(roots, _shownPart, number - 1) is not { } bookmark) return;
+        if (Find(_tree.Nodes, b => ReferenceEquals(b, bookmark)) is not { } node) return;
+        SelectQuietly(node);
+        _strip.SetCurrent(page);
+    }
+
+    /// <summary>木の行を選ぶ。選び直しで右のページを、しおりの始まりへ動かさない。</summary>
+    private void SelectQuietly(TreeNode node)
+    {
+        _rebuilding = true;
+        try
+        {
+            _tree.SelectedNode = node;
+            node.EnsureVisible();
+        }
+        finally
+        {
+            _rebuilding = false;
+        }
+    }
+
+    /// <summary>右のページの下に説明を出す。warning ならできなかったことの説明として赤で出す。空なら消す。</summary>
+    private void ShowPagesNote(string text, bool warning)
+    {
+        _pagesNote.ForeColor = warning ? Theme.Danger : SystemColors.GrayText;
+        _pagesNote.Text = text;
+    }
+
+    private static TreeNode? FileNodeOf(TreeNode? node)
+    {
+        while (node is not null && node.Tag is not Bookmark { Kind: BookmarkKind.File }) node = node.Parent;
+        return node;
+    }
+
+    /// <summary>右のページにしおりを足す。すぐ木に出し、その行で名前を書けるようにする。</summary>
+    private void AddAt(int page)
+    {
+        if (_shownPart < 0) return;
+        EndRename(commit: true);
+        if (_pagesOf(_shownPart) is not { } pages || !pages.Pages.Contains(page))
+        {
+            System.Media.SystemSounds.Beep.Play();
+            ShowPagesNote($"元のファイルの {page + 1} ページは結合しないので、しおりを付けられません（メインの画面で結合に戻せます）。", warning: true);
+            return;
+        }
+        ShowPagesNote("", warning: false);
+        if (!_choices.Added.TryGetValue(_shownPart, out var list)) _choices.Added[_shownPart] = list = [];
+        // ページ順に並べる。同じページなら、足した順に後ろへ
+        int index = list.FindLastIndex(b => b.Page <= page) + 1;
+        // 仮の名前は、ページの下に出ている番号（結合した PDF でのページ）にそろえる
+        list.Insert(index, new AddedBookmark($"{_mergedNumbers.GetValueOrDefault(page, page + 1)} ページ", page));
+        int part = _shownPart;
+        Rebuild(b => b.Kind == BookmarkKind.Added && b.Part == part && b.AddedIndex == index);
+        // 右クリックのメニューから呼ばれると、この後でメニューが閉じて入力先が元の部品へ戻り、入力欄がすぐ閉じてしまう。
+        // メニューが閉じきってから入力欄を開く
+        if (_tree.SelectedNode is { Tag: Bookmark { Kind: BookmarkKind.Added } } added) BeginInvoke(() => BeginRename(added));
     }
 
     /// <summary>設定ファイルの段数を、選べる値にそろえる（負や、選べない段数は「すべて」）。</summary>
@@ -211,13 +464,14 @@ internal sealed class BookmarkDialog : Form
     }
 
     private static bool IsEditable(TreeNode? node) =>
-        node?.Tag is Bookmark { Kind: BookmarkKind.File or BookmarkKind.Folder or BookmarkKind.Original };
+        node?.Tag is Bookmark { Kind: BookmarkKind.File or BookmarkKind.Folder or BookmarkKind.Original or BookmarkKind.Added };
 
-    /// <summary>元のしおりを、その下のしおりごと外す。外したあとは、上の行を選んでおく。</summary>
+    /// <summary>元のしおり（その下のしおりごと）か、足したしおりを外す。外したあとは、上の行を選んでおく。</summary>
     private void Drop(TreeNode node)
     {
         var bookmark = (Bookmark)node.Tag!;
-        _choices.EditsOf(bookmark.Part)[bookmark.OutlinePath!] = null;
+        if (bookmark.Kind == BookmarkKind.Added) _choices.Added[bookmark.Part].RemoveAt(bookmark.AddedIndex);
+        else _choices.EditsOf(bookmark.Part)[bookmark.OutlinePath!] = null;
         _tree.SelectedNode = node.Parent;
         Rebuild();
     }
@@ -286,6 +540,12 @@ internal sealed class BookmarkDialog : Form
         {
             _choices.Titles[bookmark.Part] = name; // 空なら、結合するときに元のファイル名に戻る
         }
+        else if (bookmark.Kind == BookmarkKind.Added)
+        {
+            if (name.Length == 0) return false; // 足したしおりには戻す名前がないので、空にはしない（外すときは Delete）
+            var list = _choices.Added[bookmark.Part];
+            list[bookmark.AddedIndex] = list[bookmark.AddedIndex] with { Title = name };
+        }
         else if (bookmark.Kind == BookmarkKind.Original)
         {
             // 空にしたときは、元の名前に戻す
@@ -319,6 +579,11 @@ internal sealed class BookmarkDialog : Form
         var bookmark = (Bookmark)node!.Tag!;
         e.Cancel = false; // 項目が空のメニューは、開く前から取りやめの印が付いている。ここで項目を足すので外す
         _menu.Items.Add(new ToolStripMenuItem("名前を変える", null, (_, _) => BeginInvoke(() => BeginRename(node))) { ShortcutKeyDisplayString = "F2" });
+        if (bookmark.Kind == BookmarkKind.Added)
+        {
+            _menu.Items.Add(new ToolStripMenuItem("このしおりを外す", null, (_, _) => Drop(node)) { ShortcutKeyDisplayString = "Delete" });
+            return;
+        }
         if (bookmark.Kind == BookmarkKind.Original)
         {
             _menu.Items.Add(new ToolStripMenuItem("このしおりを外す（下のしおりも外れます）", null, (_, _) => Drop(node))
@@ -360,12 +625,13 @@ internal sealed class BookmarkDialog : Form
         }
     }
 
-    /// <summary>ファイルの行に添える、そのファイルだけの指定（段数と、元のしおりの手直しの件数）。</summary>
+    /// <summary>ファイルの行に添える、そのファイルだけの指定（段数と、手直しと足したしおりの件数）。</summary>
     private string OwnText(int part)
     {
         var parts = new List<string>();
         if (FileDepthText(_choices.FileDepths.GetValueOrDefault(part)) is { Length: > 0 } depth) parts.Add(depth);
         if (_choices.OutlineEdits.GetValueOrDefault(part) is { Count: > 0 } edits) parts.Add($"手直し {edits.Count} 件");
+        if (_choices.Added.GetValueOrDefault(part) is { Count: > 0 } added) parts.Add($"足したしおり {added.Count} 件");
         return string.Join("・", parts);
     }
 
@@ -378,15 +644,25 @@ internal sealed class BookmarkDialog : Form
             _ => $"元のしおり {depth} 段まで",
         };
 
-    private void Rebuild()
+    /// <param name="select">作り直したあとに選ぶ行。null なら、前に選んでいた行を選び直す。</param>
+    private void Rebuild(Func<Bookmark, bool>? select = null)
     {
+        _rebuilding = true;
         // 作り直したあとも、選んでいたファイルやフォルダを選んだままにする
         var selected = _tree.SelectedNode?.Tag as Bookmark;
         _tree.BeginUpdate();
         _tree.Nodes.Clear();
         var bookmarks = _build(_choices);
+        // フォルダの段があるときだけアイコンの一覧を付ける。付けると、アイコンのない行にも空のアイコンの幅が取られるので
+        var icons = HasFolder(bookmarks) ? _icons : null;
+        if (!ReferenceEquals(_tree.ImageList, icons))
+        {
+            _tree.ImageList = icons;
+            FitRows();
+        }
         TreeNode? reselect = null;
         Add(_tree.Nodes, bookmarks, selected, ref reselect);
+        if (select is not null) reselect = Find(_tree.Nodes, select) ?? reselect;
         if (bookmarks.Count == 0) _tree.Nodes.Add("（結合できるファイルがありません）").ForeColor = SystemColors.GrayText;
         _tree.ExpandAll();
         if (reselect is not null)
@@ -399,6 +675,25 @@ internal sealed class BookmarkDialog : Form
             _tree.Nodes[0].EnsureVisible();
         }
         _tree.EndUpdate();
+        _rebuilding = false;
+        _strip.Invalidate(); // ページの下の、付けたしおりの名前を描き直す
+        // 目次ページを並べているときは、名前の変更を目次にも映す
+        if (_shownPart == ContentsPart && select is null) ShowContents();
+        // 選んだ行のファイルが変わったとき（足したばかりの行など）は、右のページも合わせる
+        if (select is not null && reselect is not null) ShowPagesOf(reselect, scroll: true);
+    }
+
+    private static bool HasFolder(IEnumerable<Bookmark> nodes) =>
+        nodes.Any(n => n.Kind == BookmarkKind.Folder || HasFolder(n.Children));
+
+    private static TreeNode? Find(TreeNodeCollection nodes, Func<Bookmark, bool> match)
+    {
+        foreach (TreeNode node in nodes)
+        {
+            if (node.Tag is Bookmark bookmark && match(bookmark)) return node;
+            if (Find(node.Nodes, match) is { } found) return found;
+        }
+        return null;
     }
 
     private void Add(TreeNodeCollection target, IReadOnlyList<Bookmark> nodes, Bookmark? selected, ref TreeNode? reselect)
@@ -413,11 +708,13 @@ internal sealed class BookmarkDialog : Form
                 BookmarkKind.Contents => "目次のページ",
                 BookmarkKind.Folder => "フォルダ。名前は F2 で変えられます",
                 BookmarkKind.File => "ファイル。名前は F2 で変えられます（一覧の「しおり名」も変わります）",
+                BookmarkKind.Added => "ページを見て足したしおり。名前は F2 で変えられ、Delete で外せます",
                 _ => "元のファイルのしおり。名前は F2 で変えられ、Delete で外せます（下のしおりも外れます）",
             };
             node.ImageIndex = node.SelectedImageIndex = bookmark.Kind == BookmarkKind.Folder ? FolderIcon : NoIcon;
             if (selected is not null && bookmark.Kind == selected.Kind && bookmark.Kind is not BookmarkKind.Contents
-                && bookmark.Part == selected.Part && bookmark.FolderKey == selected.FolderKey && bookmark.OutlinePath == selected.OutlinePath)
+                && bookmark.Part == selected.Part && bookmark.FolderKey == selected.FolderKey && bookmark.OutlinePath == selected.OutlinePath
+                && bookmark.AddedIndex == selected.AddedIndex)
             {
                 reselect = node;
             }

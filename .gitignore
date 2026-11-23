@@ -3,6 +3,7 @@
 !/.gitignore
 !/.gitattributes
 !/LICENSE
+!/.github/
 !/README.md
 !/docs-to-pdf/
 

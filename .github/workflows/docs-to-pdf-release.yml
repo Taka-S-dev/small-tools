@@ -1,0 +1,61 @@
+# docs-to-pdf-v2.1.0 のようなタグを push したら、テストを流して 2 つの exe を作り、GitHub の Releases に置く。
+# 版はプロジェクト（csproj の Version）に書いたものを正とし、タグと合わなければ何も公開せずに止める。
+name: docs-to-pdf release
+
+on:
+  push:
+    tags:
+      - "docs-to-pdf-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: docs-to-pdf
+        shell: pwsh
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: タグとプロジェクトの版が合っているか確かめる
+        run: |
+          $version = $env:TAG -replace '^docs-to-pdf-v', ''
+          foreach ($project in 'src/DocsToPdf/DocsToPdf.csproj', 'src/DocsToPdf.Cli/DocsToPdf.Cli.csproj') {
+            $written = ([xml](Get-Content $project -Raw)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
+            if ($written -ne $version) {
+              throw "タグの版 $version と $project の Version $written が違います。csproj の Version を直してから、タグを付け直してください。"
+            }
+          }
+          "VERSION=$version" >> $env:GITHUB_ENV
+
+      - name: テスト
+        run: dotnet test -c Release
+
+      # README の「ビルドとテスト」と同じ作り方
+      - name: exe を作る
+        run: |
+          dotnet publish src/DocsToPdf -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o publish
+          dotnet publish src/DocsToPdf.Cli -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o publish
+          $files = 'publish/DocsToPdf.exe', 'publish/DocsToPdfCli.exe'
+          # 落とした exe が壊れていないか、利用者が確かめられるようにする
+          Get-FileHash $files -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash.ToLowerInvariant())  $(Split-Path $_.Path -Leaf)" } |
+            Set-Content publish/SHA256SUMS.txt -Encoding ascii
+
+      - name: Releases に置く
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $notes = "実行には .NET 10 デスクトップ ランタイムが必要。Word・Excel・PowerPoint の変換には Microsoft Office が必要。"
+          $options = @('--title', "docs-to-pdf v$env:VERSION", '--notes', $notes, '--generate-notes')
+          # 2.1.0-beta.1 のように後ろに印がある版は、試験版として出す
+          if ($env:VERSION -match '-') { $options += '--prerelease' }
+          gh release create $env:TAG publish/DocsToPdf.exe publish/DocsToPdfCli.exe publish/SHA256SUMS.txt @options

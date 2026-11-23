@@ -1,0 +1,39 @@
+# docs-to-pdf を変えたら、ビルドとテストを流す。
+# Office を使う変換と画面の操作は、Office も画面もない GitHub のマシンでは確かめられないので、手元で確かめる。
+name: docs-to-pdf CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs-to-pdf/**"
+      - ".github/workflows/docs-to-pdf-*.yml"
+  pull_request:
+    paths:
+      - "docs-to-pdf/**"
+      - ".github/workflows/docs-to-pdf-*.yml"
+
+permissions:
+  contents: read
+
+# 続けて push したら、古いほうの実行はやめる
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: docs-to-pdf
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+      # 警告はエラーとして扱う（Directory.Build.props の TreatWarningsAsErrors）
+      - name: ビルド
+        run: dotnet build -c Release
+      - name: テスト
+        run: dotnet test -c Release --no-build

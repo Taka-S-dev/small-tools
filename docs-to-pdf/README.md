@@ -261,6 +261,11 @@ dotnet publish src/DocsToPdf.Cli -c Release -r win-x64 --self-contained false -p
 実行には .NET 10 デスクトップ ランタイムが必要。
 Release ビルドにはデバッグ情報を付けず、ビルドした PC のフォルダのパスも埋め込まない。
 
+GitHub では、このフォルダを変えて push するたびに、ビルドとテストが自動で流れる（`.github/workflows/docs-to-pdf-ci.yml`）。
+配布するときは、両方の csproj の `Version` を上げてコミットし、`docs-to-pdf-v2.1.0` の形のタグを push する。
+テストを流して 2 つの exe を作り、SHA-256 の一覧（`SHA256SUMS.txt`）と一緒に Releases に置く（`.github/workflows/docs-to-pdf-release.yml`）。
+タグの版と csproj の `Version` が違うときは、何も公開せずに止まる。`2.1.0-beta.1` のように後ろに印がある版は、試験版として出す。
+
 テストは Office を使わない部分（ページ指定、結合、分割、ファイルごとの保存とその名前の決め方、しおり、目次、ページ番号、ページの回転、画像の変換、ファイルの集め方と種類の判定、マクロの取り除き、確認の画面で止まったかの判定、Office を止めてよいかの判定）を確かめる。
 Office での変換は、実際の Office がないと確かめられないため含めていない。
 

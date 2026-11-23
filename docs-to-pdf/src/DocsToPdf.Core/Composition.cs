@@ -63,6 +63,9 @@ internal sealed record Composition(
     /// <summary>しおりの一番上の段ごとに中表紙を入れるか（MergeOptions.Dividers）。</summary>
     public bool Dividers { get; init; }
 
+    /// <summary>ファイルを小さく作るか（ConvertRequest.Small）。</summary>
+    public bool Small { get; init; }
+
     public static bool IsCompositionFile(string path) =>
         string.Equals(System.IO.Path.GetExtension(path), Extension, StringComparison.OrdinalIgnoreCase);
 
@@ -113,6 +116,7 @@ internal static class CompositionFile
             TableOfContents = composition.TableOfContents,
             DuplexBlanks = composition.DuplexBlanks,
             Dividers = composition.Dividers ? true : null,
+            Small = composition.Small ? true : null,
             BookmarkDepth = composition.OutlineDepth,
             FolderBookmarks = composition.FolderBookmarks,
             FolderNames = composition.FolderNames.Count == 0 ? null
@@ -221,6 +225,7 @@ internal static class CompositionFile
                 dto.BookmarkDepth is < 0 ? null : dto.BookmarkDepth, dto.FolderBookmarks, folderNames)
             {
                 Dividers = dto.Dividers == true,
+                Small = dto.Small == true,
             };
         }
         catch (ArgumentException ex)
@@ -239,6 +244,7 @@ internal static class CompositionFile
         public bool TableOfContents { get; set; }
         public bool DuplexBlanks { get; set; }
         public bool? Dividers { get; set; }
+        public bool? Small { get; set; }
         public int? BookmarkDepth { get; set; }
         public bool FolderBookmarks { get; set; } = true;
         public List<FolderNameDto>? FolderNames { get; set; }

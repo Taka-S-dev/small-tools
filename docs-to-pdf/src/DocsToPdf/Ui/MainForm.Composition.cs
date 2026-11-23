@@ -9,6 +9,8 @@ internal sealed partial class MainForm
 
     /// <summary>最後に開いた・保存した一覧のファイル。次に保存するときの既定にする。</summary>
     private string? _compositionPath;
+    /// <summary>一覧を開いてオプションを当てている間。「ファイルサイズを小さくする」を当てても、その場では変換し直さない。</summary>
+    private bool _settingOptions;
 
     private void SaveComposition()
     {
@@ -41,6 +43,7 @@ internal sealed partial class MainForm
             new Dictionary<string, string>(_folderNames, StringComparer.OrdinalIgnoreCase))
         {
             Dividers = _optDividers.Checked,
+            Small = _optSmall.Checked,
         };
         try
         {
@@ -153,6 +156,10 @@ internal sealed partial class MainForm
         _optToc.Checked = composition.TableOfContents || (_startup.IsBatch && _startup.TableOfContents);
         _optDuplex.Checked = composition.DuplexBlanks || (_startup.IsBatch && _startup.DuplexBlanks);
         _optDividers.Checked = composition.Dividers || (_startup.IsBatch && _startup.Dividers);
+        // 行はこのあと変換するので、ここで切り替えても変換し直さない
+        _settingOptions = true;
+        try { _optSmall.Checked = composition.Small || (_startup.IsBatch && _startup.Small); }
+        finally { _settingOptions = false; }
         _outlineDepth = composition.OutlineDepth;
         _folderBookmarks = composition.FolderBookmarks;
         _folderNames.Clear();

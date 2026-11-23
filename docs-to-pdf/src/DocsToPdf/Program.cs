@@ -7,13 +7,14 @@ namespace DocsToPdf;
 /// 起動時の指定。ファイルやフォルダのパスのほかに、スクリプトから使うための指定を受け付ける。
 ///   --out 保存先.pdf   画面の操作なしで結合して終了する（成功 0、失敗 1）
 ///   --page-numbers / --toc / --dividers / --duplex   ページ番号・目次・中表紙・両面印刷用の白紙
+///   --small            ファイルを小さく作る
 ///   --open             作成後に PDF を開く
 ///   --pick [範囲]      最初のファイルの「ページを選んで保存」を、そのページを選んだ状態で開く（例: --pick 1-3 10-12）
 ///   --split            最初のファイルの「分割」を開く
 /// </summary>
 internal sealed record StartupOptions(
     string[] Paths, string? Output, bool PageNumbers, bool TableOfContents, bool DuplexBlanks, bool Open,
-    StartupDialog? Dialog = null, bool Dividers = false)
+    StartupDialog? Dialog = null, bool Dividers = false, bool Small = false)
 {
     public bool IsBatch => Output is not null;
 
@@ -21,7 +22,7 @@ internal sealed record StartupOptions(
     {
         var paths = new List<string>();
         string? output = null;
-        bool numbers = false, toc = false, dividers = false, duplex = false, open = false;
+        bool numbers = false, toc = false, dividers = false, duplex = false, small = false, open = false;
         StartupDialog? dialog = null;
 
         for (int i = 0; i < args.Length; i++)
@@ -40,6 +41,9 @@ internal sealed record StartupOptions(
                     break;
                 case "--dividers":
                     dividers = true;
+                    break;
+                case "--small":
+                    small = true;
                     break;
                 case "--duplex":
                     duplex = true;
@@ -64,7 +68,7 @@ internal sealed record StartupOptions(
                     break;
             }
         }
-        return new StartupOptions([.. paths], output, numbers, toc, duplex, open, dialog, dividers);
+        return new StartupOptions([.. paths], output, numbers, toc, duplex, open, dialog, dividers, small);
     }
 }
 

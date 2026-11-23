@@ -70,6 +70,7 @@ internal sealed partial class MainForm : Form
     private readonly CheckBox _optToc = Option("目次ページを付ける");
     private readonly CheckBox _optDividers = Option("中表紙を入れる");
     private readonly CheckBox _optDuplex = Option("両面印刷用に白紙を挟む");
+    private readonly CheckBox _optSmall = Option("ファイルサイズを小さくする");
     private readonly CheckBox _optOpen = Option("作成後に開く");
     private readonly Button _bookmarks = new() { Text = "しおりを確認...", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
     /// <summary>元のファイルのしおりを何段まで付けるか。null ならすべて、0 なら付けない。</summary>
@@ -124,6 +125,7 @@ internal sealed partial class MainForm : Form
         _optToc.Checked = startup.IsBatch ? startup.TableOfContents : _settings.TableOfContents;
         _optDividers.Checked = startup.IsBatch ? startup.Dividers : _settings.Dividers;
         _optDuplex.Checked = startup.IsBatch ? startup.DuplexBlanks : _settings.DuplexBlanks;
+        _optSmall.Checked = startup.IsBatch ? startup.Small : _settings.Small;
         _optOpen.Checked = startup.IsBatch ? startup.Open : _settings.OpenAfterCreate;
         if (!startup.IsBatch)
         {
@@ -174,7 +176,7 @@ internal sealed partial class MainForm : Form
 
         // オプション
         var options = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(0, 8, 0, 0) };
-        options.Controls.AddRange([_optPageNumbers, _optToc, _optDividers, _optDuplex, _optOpen, _bookmarks]);
+        options.Controls.AddRange([_optPageNumbers, _optToc, _optDividers, _optDuplex, _optSmall, _optOpen, _bookmarks]);
 
         // 下の行: ふだんは合計、作成中は進み具合
         // 右の大きいボタンと高さがそろうよう、行の中で上下中央に置く
@@ -232,6 +234,9 @@ internal sealed partial class MainForm : Form
         _toolTip.SetToolTip(_optDividers, "しおりの一番上の段ごとに、その名前だけのページを前に入れます。\n"
             + "フォルダごとにまとめていればフォルダごと、そうでなければファイルごとに入ります。中表紙にはページ番号を入れません");
         _toolTip.SetToolTip(_optDuplex, "各ファイルが紙の表（奇数ページ）から始まるよう、必要なところに白紙を入れます");
+        _toolTip.SetToolTip(_optSmall, "Word・Excel・PowerPoint は Office の「最小サイズ」で PDF にし、画像は解像度を下げます。\n"
+            + "メールで送るときなどに。画面で読むには足りますが、印刷の画質は下がります。元が PDF のファイルはそのままです。\n"
+            + "切り替えると、PDF 以外のファイルを変換し直します");
         _toolTip.SetToolTip(_optOpen, "できあがった PDF をすぐに開きます");
         _toolTip.SetToolTip(_bookmarks, BookmarksTip);
         _toolTip.SetToolTip(_run, "上から順に 1 つの PDF にまとめます（Ctrl+Enter）");
@@ -302,6 +307,7 @@ internal sealed partial class MainForm : Form
 
         foreach (var option in new[] { _optPageNumbers, _optToc, _optDividers, _optDuplex })
             option.CheckedChanged += (_, _) => UpdateSummary();
+        _optSmall.CheckedChanged += (_, _) => ReconvertForSize();
 
         _list.SelectedIndexChanged += (_, _) => OnSelectionChanged();
         _list.KeyDown += OnListKeyDown;
@@ -712,7 +718,7 @@ internal sealed partial class MainForm : Form
         _runEach.Enabled = _run.Enabled;
         _cancel.Enabled = (_busy && _cts is { IsCancellationRequested: false }) || IsScanning;
         _emptyHint.Cursor = idle ? Cursors.Hand : Cursors.Default;
-        foreach (var option in new[] { _optPageNumbers, _optToc, _optDividers, _optDuplex, _optOpen })
+        foreach (var option in new[] { _optPageNumbers, _optToc, _optDividers, _optDuplex, _optSmall, _optOpen })
             option.Enabled = idle;
         ShowBookmarkChoice(); // 元に戻したり行を消したりすると、ファイルごとの指定も変わる
         _bookmarks.Enabled = idle && count > 0;
@@ -814,6 +820,7 @@ internal sealed partial class MainForm : Form
             _settings.TableOfContents = _optToc.Checked;
             _settings.DuplexBlanks = _optDuplex.Checked;
             _settings.Dividers = _optDividers.Checked;
+            _settings.Small = _optSmall.Checked;
             _settings.OpenAfterCreate = _optOpen.Checked;
             _settings.BookmarkDepth = _outlineDepth ?? -1;
             _settings.FolderBookmarks = _folderBookmarks;

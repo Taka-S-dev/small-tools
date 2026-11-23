@@ -30,6 +30,7 @@ public class CompositionTests
         new Dictionary<string, string> { [root] = "資料" })
     {
         Dividers = true,
+        Small = true,
     };
 
     [Fact]
@@ -50,6 +51,7 @@ public class CompositionTests
         Assert.Equal(1, loaded.OutlineDepth);
         Assert.False(loaded.FolderBookmarks);
         Assert.True(loaded.Dividers);
+        Assert.True(loaded.Small);
         Assert.Equal("資料", loaded.FolderNames[root]);
         Assert.Equal(2, loaded.Items.Count);
 

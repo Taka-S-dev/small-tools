@@ -25,6 +25,11 @@ internal static class Program
         Description = "元のファイルのしおり（Word の見出しなど）を N 段まで付ける。0 なら付けない（既定はすべて）",
         HelpName = "N",
     };
+    private static readonly Option<bool> Small = new("--small")
+    {
+        Description = "ファイルを小さく作る。Word・Excel・PowerPoint は Office の「最小サイズ」で書き出し、画像は解像度を下げる"
+            + "（画面で読むには足りるが、印刷の画質は下がる。元が PDF のファイルはそのまま）",
+    };
     private static readonly Option<int> Timeout = new("--timeout")
     {
         Description = "1 ファイルの変換を待つ時間（分）。過ぎると Office を止めて失敗にする",
@@ -133,15 +138,15 @@ internal static class Program
             "Word・Excel・PowerPoint・画像を、ファイルごとに PDF にする（同じ名前の .pdf を隣に作る）。\n" +
             "1 つにまとめるときは merge、PDF を分けるときは split、ページを抜き出すときは extract を使う。")
         {
-            inputs, output, numbers, BookmarkDepth, Force, Timeout, Quiet,
+            inputs, output, numbers, BookmarkDepth, Small, Force, Timeout, Quiet,
         };
         root.SetAction((result, ct) => ConvertEachAsync(
             result.GetValue(inputs) ?? [], result.GetValue(output), result.GetValue(numbers), result.GetValue(BookmarkDepth),
-            result.GetValue(Force), result.GetValue(Timeout), new Log(result.GetValue(Quiet)), ct));
+            result.GetValue(Small), result.GetValue(Force), result.GetValue(Timeout), new Log(result.GetValue(Quiet)), ct));
         return root;
     }
 
-    private static async Task<int> ConvertEachAsync(string[] inputs, string? output, bool pageNumbers, int? outlineDepth, bool force,
+    private static async Task<int> ConvertEachAsync(string[] inputs, string? output, bool pageNumbers, int? outlineDepth, bool small, bool force,
         int timeoutMinutes, Log log, CancellationToken ct)
     {
         if (inputs.Length == 0)
@@ -169,7 +174,7 @@ internal static class Program
         var targets = IndividualPdf.FileNames(files, file => folder ?? Path.GetDirectoryName(file)!);
         if (!CanWrite(targets, force, log)) return ExitCodes.Failure;
 
-        return await RunAsync(log, timeoutMinutes, async session =>
+        return await RunAsync(log, timeoutMinutes, small, async session =>
         {
             // 変換できたものから順に書き出す（途中で止めても、終わった分は残る）
             int written = 0;
@@ -224,7 +229,7 @@ internal static class Program
 
         var command = new Command("merge", "ファイルを PDF にして、ファイルごとのしおりを付けて 1 つに結合する")
         {
-            inputs, output, toc, numbers, dividers, duplex, title, BookmarkDepth, flat, allowNetwork, open, Force, Timeout, Quiet,
+            inputs, output, toc, numbers, dividers, duplex, title, BookmarkDepth, flat, Small, allowNetwork, open, Force, Timeout, Quiet,
         };
         command.SetAction((result, ct) => MergeAsync(
             result.GetValue(inputs)!, result.GetValue(output)!,
@@ -233,16 +238,16 @@ internal static class Program
                 OutlineDepth = result.GetValue(BookmarkDepth),
                 Dividers = result.GetValue(dividers),
             },
-            !result.GetValue(flat), result.GetValue(open), result.GetValue(Force), result.GetValue(allowNetwork), result.GetValue(Timeout),
-            new Log(result.GetValue(Quiet)), ct));
+            !result.GetValue(flat), result.GetValue(open), result.GetValue(Force), result.GetValue(allowNetwork), result.GetValue(Small),
+            result.GetValue(Timeout), new Log(result.GetValue(Quiet)), ct));
         return command;
     }
 
     private static async Task<int> MergeAsync(string[] inputs, string output, MergeOptions options, bool folderBookmarks, bool open, bool force,
-        bool allowNetwork, int timeoutMinutes, Log log, CancellationToken ct)
+        bool allowNetwork, bool small, int timeoutMinutes, Log log, CancellationToken ct)
     {
         if (inputs is [var single] && Composition.IsCompositionFile(single))
-            return await MergeCompositionAsync(single, output, options, open, force, allowNetwork, timeoutMinutes, log, ct);
+            return await MergeCompositionAsync(single, output, options, open, force, allowNetwork, small, timeoutMinutes, log, ct);
 
         var expanded = InputFiles.Expand(inputs, sortAll: false); // 書いた順に結合する
         var (files, rejected) = expanded;
@@ -262,7 +267,7 @@ internal static class Program
         }
         if (!CanWrite([target], force, log)) return ExitCodes.Failure;
 
-        return await RunAsync(log, timeoutMinutes, async session =>
+        return await RunAsync(log, timeoutMinutes, small, async session =>
         {
             var converted = await session.ConvertAllAsync(files, ct);
             if (converted is null)
@@ -298,7 +303,7 @@ internal static class Program
     /// コマンドラインで付けたオプション（--toc など）は、一覧のオプションに足す。
     /// </summary>
     private static async Task<int> MergeCompositionAsync(string listPath, string output, MergeOptions options, bool open, bool force,
-        bool allowNetwork, int timeoutMinutes, Log log, CancellationToken ct)
+        bool allowNetwork, bool small, int timeoutMinutes, Log log, CancellationToken ct)
     {
         Composition composition;
         try
@@ -343,13 +348,9 @@ internal static class Program
             OutlineDepth = options.OutlineDepth ?? composition.OutlineDepth,
         };
 
-        return await RunAsync(log, timeoutMinutes, async session =>
+        return await RunAsync(log, timeoutMinutes, small || composition.Small, async session =>
         {
-            var requests = items.Select(i =>
-            {
-                FileEntry.TryGetKind(i.Path, out var kind);
-                return new ConvertRequest(i.Path, kind, i.Sheets, i.FitWidth, null);
-            }).ToList();
+            var requests = items.Select(i => session.RequestOf(i.Path, i.Sheets, i.FitWidth)).ToList();
             var converted = await session.ConvertAllAsync(requests, ct);
             if (converted is null)
             {
@@ -553,11 +554,15 @@ internal static class Program
     }
 
     /// <summary>変換の仕組みを用意して処理を行い、中止と予期しない失敗を終了コードに直す。</summary>
-    private static async Task<int> RunAsync(Log log, int timeoutMinutes, Func<Session, Task<int>> work)
+    private static Task<int> RunAsync(Log log, int timeoutMinutes, Func<Session, Task<int>> work) =>
+        RunAsync(log, timeoutMinutes, small: false, work);
+
+    /// <param name="small">Word・Excel・PowerPoint・画像を小さく作る（--small）。</param>
+    private static async Task<int> RunAsync(Log log, int timeoutMinutes, bool small, Func<Session, Task<int>> work)
     {
         try
         {
-            using var session = new Session(TimeSpan.FromMinutes(timeoutMinutes), log);
+            using var session = new Session(TimeSpan.FromMinutes(timeoutMinutes), log, small);
             return await work(session);
         }
         catch (OperationCanceledException)

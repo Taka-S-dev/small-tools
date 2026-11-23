@@ -145,14 +145,15 @@ internal sealed class ConversionService : IDisposable
                             switch (request.Kind)
                             {
                                 case FileKind.Word:
-                                    (word ??= new WordApp()).Export(copy, pdf, request.Password, _timeout, _shutdown.Token);
+                                    (word ??= new WordApp()).Export(copy, pdf, request.Password, request.Small, _timeout, _shutdown.Token);
                                     break;
                                 case FileKind.Excel:
                                     sheets = (excel ??= new ExcelApp()).Export(copy, pdf, request.Password,
-                                        request.Sheets, request.FitWidth, _timeout, _shutdown.Token);
+                                        request.Sheets, request.FitWidth, request.Small, _timeout, _shutdown.Token);
                                     break;
                                 default:
                                     (powerPoint ??= new PowerPointApp()).Export(copy, pdf, request.Password, _timeout, _shutdown.Token);
+                                    if (request.Small) PdfImages.Shrink(pdf, ImagePdf.SmallDpi);
                                     break;
                             }
 
@@ -260,7 +261,7 @@ internal sealed class ConversionService : IDisposable
     private ConvertOutcome PrepareImage(ConvertRequest request, int id, SourceStamp stamp)
     {
         string pdf = PdfPathFor(id);
-        ImagePdf.Create(request.Path, pdf);
+        ImagePdf.Create(request.Path, pdf, request.Small);
         return Finish(pdf, stamp, null);
     }
 

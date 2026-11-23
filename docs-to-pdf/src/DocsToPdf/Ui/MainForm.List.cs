@@ -237,9 +237,22 @@ internal sealed partial class MainForm
         entry.Error = null;
         entry.Converted = null;
 
-        var request = new ConvertRequest(entry.Path, entry.Kind, entry.Sheets, entry.FitWidth, entry.Password);
+        var request = new ConvertRequest(entry.Path, entry.Kind, entry.Sheets, entry.FitWidth, entry.Password, _optSmall.Checked);
         _ = ConvertAsync(entry, version, request, pending.Token);
         EntryChanged(entry);
+    }
+
+    /// <summary>「ファイルサイズを小さくする」を切り替えたら、PDF 以外の行を変換し直す（元が PDF の行は変わらない）。</summary>
+    private void ReconvertForSize()
+    {
+        if (_settingOptions) return;
+        var targets = Entries().Where(e => e.Kind != FileKind.Pdf).ToList();
+        if (targets.Count == 0) return;
+        foreach (var entry in targets) Prepare(entry);
+        RefreshAll();
+        SetStatus(_optSmall.Checked
+            ? $"PDF 以外の {targets.Count} 件を、小さく作り直しています..."
+            : $"PDF 以外の {targets.Count} 件を、元の画質で作り直しています...");
     }
 
     private async Task ConvertAsync(FileEntry entry, int version, ConvertRequest request, CancellationToken token)

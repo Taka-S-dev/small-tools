@@ -11,10 +11,13 @@ internal sealed class Session : IDisposable
     private readonly TempWorkspace _workspace;
     private readonly ConversionService _service;
     private readonly Log _log;
+    private readonly bool _small;
 
-    public Session(TimeSpan timeoutPerFile, Log log)
+    /// <param name="small">Word・Excel・PowerPoint・画像を小さく作る（ConvertRequest.Small）。</param>
+    public Session(TimeSpan timeoutPerFile, Log log, bool small = false)
     {
         _log = log;
+        _small = small;
         TempWorkspace.CleanupStale(); // 前に異常終了したときの残りを片付ける
         _workspace = TempWorkspace.Create();
         _service = new ConversionService(_workspace.FolderPath, timeoutPerFile);
@@ -24,6 +27,13 @@ internal sealed class Session : IDisposable
     public Task<IReadOnlyList<ConvertedPdf>?> ConvertAllAsync(IReadOnlyList<string> files, CancellationToken ct) =>
         ConvertAllAsync(files.Select(RequestOf).ToList(), ct);
 
+    /// <summary>シートや幅の指定つきの依頼を作る（小さく作るかは、この実行の指定に従う）。</summary>
+    public ConvertRequest RequestOf(string file, IReadOnlyList<string>? sheets, bool fitWidth)
+    {
+        FileEntry.TryGetKind(file, out var kind);
+        return new ConvertRequest(file, kind, sheets, fitWidth, null, _small);
+    }
+
     /// <summary>シートや幅の指定つきで、順に PDF にする。1 つでも失敗すれば、理由を出して null を返す。</summary>
     public async Task<IReadOnlyList<ConvertedPdf>?> ConvertAllAsync(IReadOnlyList<ConvertRequest> requests, CancellationToken ct)
     {
@@ -31,11 +41,7 @@ internal sealed class Session : IDisposable
         return results.All(r => r is not null) ? results.Select(r => r!).ToList() : null;
     }
 
-    private static ConvertRequest RequestOf(string file)
-    {
-        FileEntry.TryGetKind(file, out var kind);
-        return new ConvertRequest(file, kind, null, false, null);
-    }
+    private ConvertRequest RequestOf(string file) => RequestOf(file, null, false);
 
     /// <summary>
     /// ファイルを順に PDF にする。失敗したファイルは理由を出し、その位置を null にして返す。

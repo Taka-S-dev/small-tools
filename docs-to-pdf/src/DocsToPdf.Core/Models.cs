@@ -74,12 +74,17 @@ internal sealed record ConvertedPdf(
 }
 
 /// <summary>変換の依頼。変換スレッドへ渡すので、行の状態を写した変わらない値にしてある。</summary>
+/// <param name="Small">
+/// ファイルを小さく作る。Office は「最小サイズ」で書き出し（画像の解像度を画面で見る向けに下げる）、
+/// 画像のファイルは載せる大きさに見合う解像度まで縮める。元が PDF のファイルはそのまま。
+/// </param>
 internal sealed record ConvertRequest(
     string Path,
     FileKind Kind,
     IReadOnlyList<string>? Sheets,
     bool FitWidth,
-    string? Password);
+    string? Password,
+    bool Small = false);
 
 /// <summary>変換の結果。成功なら Pdf、失敗なら Error が入る。</summary>
 internal sealed record ConvertOutcome(ConvertedPdf? Pdf, SourceStamp? Stamp, string? Error, bool NeedsPassword)

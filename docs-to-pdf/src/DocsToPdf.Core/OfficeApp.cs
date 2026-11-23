@@ -430,7 +430,8 @@ internal sealed class WordApp : OfficeApp
     });
 
     /// <summary>文書を PDF にする。見出しはしおりになる。</summary>
-    public void Export(string source, string pdf, string? password, TimeSpan timeout, CancellationToken ct) =>
+    /// <param name="small">「最小サイズ」で書き出す（画像の解像度を下げる）。</param>
+    public void Export(string source, string pdf, string? password, bool small, TimeSpan timeout, CancellationToken ct) =>
         Run<object?>(app =>
         {
             dynamic documents = app.Documents;
@@ -475,7 +476,7 @@ internal sealed class WordApp : OfficeApp
                     OutputFileName: pdf,
                     ExportFormat: 17,        // wdExportFormatPDF
                     OpenAfterExport: false,
-                    OptimizeFor: 0,          // wdExportOptimizeForPrint
+                    OptimizeFor: small ? 1 : 0, // wdExportOptimizeForOnScreen / wdExportOptimizeForPrint
                     Range: 0,                // wdExportAllDocument
                     Item: 0,                 // wdExportDocumentContent
                     IncludeDocProps: true,
@@ -558,9 +559,10 @@ internal sealed class ExcelApp : OfficeApp
     /// </summary>
     /// <param name="sheets">出力するシート名。null なら表示されているシートすべて。</param>
     /// <param name="fitWidth">出力するシートのすべての列を、1 ページの幅に収める。</param>
+    /// <param name="small">「最小サイズ」で書き出す（画像の解像度を下げる）。</param>
     /// <returns>表示されているシートの一覧と、それぞれのページ数（数えられなければ 0）。</returns>
     public IReadOnlyList<SheetInfo> Export(string source, string pdf, string? password,
-        IReadOnlyList<string>? sheets, bool fitWidth, TimeSpan timeout, CancellationToken ct) =>
+        IReadOnlyList<string>? sheets, bool fitWidth, bool small, TimeSpan timeout, CancellationToken ct) =>
         Run(app =>
         {
             dynamic workbooks = app.Workbooks;
@@ -607,7 +609,7 @@ internal sealed class ExcelApp : OfficeApp
                     book.ExportAsFixedFormat(
                         Type: 0,                 // xlTypePDF
                         Filename: pdf,
-                        Quality: 0,              // xlQualityStandard
+                        Quality: small ? 1 : 0,  // xlQualityMinimum / xlQualityStandard
                         IncludeDocProperties: true,
                         IgnorePrintAreas: false,
                         OpenAfterPublish: false);
@@ -625,7 +627,7 @@ internal sealed class ExcelApp : OfficeApp
                     active.ExportAsFixedFormat(
                         Type: 0,
                         Filename: pdf,
-                        Quality: 0,
+                        Quality: small ? 1 : 0,
                         IncludeDocProperties: true,
                         IgnorePrintAreas: false,
                         OpenAfterPublish: false);
@@ -726,7 +728,11 @@ internal sealed class PowerPointApp : OfficeApp
     // その場合は画面に出ているので「自分で起動したものではない」と判断し、終了も強制終了もしない。
     protected override bool LooksFresh(dynamic app) => (int)app.Visible == 0 && (int)app.Presentations.Count == 0;
 
-    /// <summary>スライドを PDF にする。非表示のスライドは出ず、スライドのタイトルがしおりになる。</summary>
+    /// <summary>
+    /// スライドを PDF にする。非表示のスライドは出ず、スライドのタイトルがしおりになる。
+    /// 「最小サイズ」の書き出し（ExportAsFixedFormat）は、型ライブラリなしの呼び出しでは PowerPoint が受け付けない
+    /// （引数の型が合わないと断られる）ので、小さく作るときは書き出したあとに PdfImages で縮める。
+    /// </summary>
     public void Export(string source, string pdf, string? password, TimeSpan timeout, CancellationToken ct) =>
         Run<object?>(app =>
         {

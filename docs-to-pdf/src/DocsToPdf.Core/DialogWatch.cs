@@ -86,14 +86,17 @@ internal sealed class DialogWatch : IDisposable
     }
 
     /// <summary>そのプロセスが出している、見えている確認の画面（なければ IntPtr.Zero）。</summary>
-    internal static IntPtr FindDialog(int processId)
+    internal static IntPtr FindDialog(int processId) => FindVisibleWindow(processId, IsDialogClass);
+
+    /// <summary>そのプロセスが出している、見えている窓のうち、クラス名が合う最初のもの（なければ IntPtr.Zero）。</summary>
+    internal static IntPtr FindVisibleWindow(int processId, Func<string, bool> classMatches)
     {
         IntPtr found = IntPtr.Zero;
         EnumWindows((hwnd, _) =>
         {
             GetWindowThreadProcessId(hwnd, out uint pid);
             if (pid != processId || !IsWindowVisible(hwnd)) return true;
-            if (!IsDialogClass(ClassName(hwnd))) return true;
+            if (!classMatches(ClassName(hwnd))) return true;
             found = hwnd;
             return false;
         }, IntPtr.Zero);

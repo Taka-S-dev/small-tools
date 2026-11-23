@@ -22,17 +22,21 @@ internal abstract class OfficeApp : IDisposable
 
     private readonly string _progId;
     private readonly string _processName;
+    /// <summary>文書を出す窓のクラス名（Word の OpusApp など）。これが見えていれば、利用者が文書を開いている。</summary>
+    private readonly string _documentWindowClass;
     private dynamic? _app;
-    private Process? _process;
-    private bool _owned;
+    private volatile Process? _process;
+    // 時間切れや確認の画面の見張り（別スレッド）からも読むので volatile
+    private volatile bool _owned;
     private volatile bool _killed;
     /// <summary>確認の画面で止まって打ち切ったときの、その画面の文面。</summary>
     private volatile string? _stuckDialog;
 
-    protected OfficeApp(string progId, string processName, string displayName)
+    protected OfficeApp(string progId, string processName, string displayName, string documentWindowClass)
     {
         _progId = progId;
         _processName = processName;
+        _documentWindowClass = documentWindowClass;
         DisplayName = displayName;
     }
 
@@ -269,17 +273,41 @@ internal abstract class OfficeApp : IDisposable
         }
     }
 
-    /// <summary>タイマーや終了処理（別スレッド）から呼ばれる。</summary>
+    /// <summary>タイマー・確認の画面の見張り・終了処理（別スレッド）から呼ばれる。</summary>
     /// <param name="onlyIfHidden">
     /// 画面に出ていない Office だけを止める。アプリを閉じるときに使う。
     /// 画面に出ているなら利用者のファイルが開かれているので、止めずに残す。
     /// </param>
     private void Kill(bool onlyIfHidden)
     {
-        if (!_owned) return;
-        if (onlyIfHidden && HasVisibleWindow()) return;
+        var process = _process;
+        if (!MayKill(_owned, onlyIfHidden, HasVisibleWindow(), ShowsUserDocument(process))) return;
         _killed = true;
-        try { _process?.Kill(entireProcessTree: true); } catch { /* もう終わっている */ }
+        try { process?.Kill(entireProcessTree: true); } catch { /* もう終わっている */ }
+    }
+
+    /// <summary>
+    /// 自分で起動した Office を止めてよいか。
+    /// 変換している間に、利用者がこの Office で自分の文書を開いていることがある（Office は動いているものを使い回して開くため）。
+    /// その文書の窓が見えているときは、時間切れや確認の画面で止まったときでも止めない（編集中の文書ごと消えてしまう）。
+    /// 確認の画面も、利用者の文書が出したもの（「保存しますか」など）かもしれない。
+    /// 止めなければ、Office が返ってきたところで、利用者に引き渡す（RelinquishIfInUse）。
+    /// </summary>
+    internal static bool MayKill(bool owned, bool onlyIfHidden, bool anyWindowVisible, bool userDocumentVisible) =>
+        owned && !userDocumentVisible && !(onlyIfHidden && anyWindowVisible);
+
+    /// <summary>利用者の文書の窓が見えているか。COM を使わずに窓を数えるので、変換で止まっていても、ほかのスレッドから調べられる。</summary>
+    private bool ShowsUserDocument(Process? process)
+    {
+        try
+        {
+            return process is { HasExited: false }
+                && DialogWatch.FindVisibleWindow(process.Id, name => name == _documentWindowClass) != IntPtr.Zero;
+        }
+        catch
+        {
+            return false; // もう終わっている
+        }
     }
 
     /// <summary>今の Office との接続を捨てる。自分で起動したものが生きていれば強制終了する。</summary>
@@ -385,7 +413,7 @@ internal abstract class OfficeApp : IDisposable
 
 internal sealed class WordApp : OfficeApp
 {
-    public WordApp() : base("Word.Application", "WINWORD", "Word") { }
+    public WordApp() : base("Word.Application", "WINWORD", "Word", "OpusApp") { }
 
     protected override void Configure(dynamic app)
     {
@@ -500,7 +528,7 @@ internal sealed class ExcelApp : OfficeApp
 {
     private const int SheetVisible = -1; // xlSheetVisible
 
-    public ExcelApp() : base("Excel.Application", "EXCEL", "Excel") { }
+    public ExcelApp() : base("Excel.Application", "EXCEL", "Excel", "XLMAIN") { }
 
     protected override void Configure(dynamic app)
     {
@@ -678,7 +706,7 @@ internal sealed class ExcelApp : OfficeApp
 
 internal sealed class PowerPointApp : OfficeApp
 {
-    public PowerPointApp() : base("PowerPoint.Application", "POWERPNT", "PowerPoint") { }
+    public PowerPointApp() : base("PowerPoint.Application", "POWERPNT", "PowerPoint", "PPTFrameClass") { }
 
     protected override void Configure(dynamic app)
     {

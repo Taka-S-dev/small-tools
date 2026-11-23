@@ -88,13 +88,16 @@ internal sealed class PdfPageRenderer
 /// <summary>ページの向きと、ページに重ねる小さなボタンの記号。</summary>
 internal static class PageGlyphs
 {
-    // Windows 10 以降に入っている記号のフォント。なければ文字で代用する
-    private const string SymbolFamily = "Segoe MDL2 Assets";
-    public static readonly bool HasSymbols = FontFamily.Families.Any(f => f.Name == SymbolFamily);
+    // 記号のフォント。Windows 11 の Segoe Fluent Icons（線が整っている）、なければ Windows 10 の Segoe MDL2 Assets。
+    // 記号の番号は両方で同じ。どちらもなければ文字で代用する
+    private static readonly string? SymbolFamily =
+        new[] { "Segoe Fluent Icons", "Segoe MDL2 Assets" }.FirstOrDefault(name => FontFamily.Families.Any(f => f.Name == name));
+    public static readonly bool HasSymbols = SymbolFamily is not null;
     public static string Zoom => HasSymbols ? "" : "＋";
     public static string RotateRight => HasSymbols ? "" : "↻";
 
-    public static Font SymbolFont(float size) => HasSymbols ? new Font(SymbolFamily, size) : new Font(SystemFonts.DefaultFont.FontFamily, size);
+    public static Font SymbolFont(float size) =>
+        SymbolFamily is { } family ? new Font(family, size) : new Font(SystemFonts.DefaultFont.FontFamily, size);
 
     /// <summary>回したあとのページの大きさ。</summary>
     public static PageSize Turned(PageSize size, int turn) => turn is 90 or 270 ? new PageSize(size.Height, size.Width) : size;
@@ -207,7 +210,7 @@ internal sealed class PageStrip : ScrollableControl
         Name = "PagePreview";
         AccessibleName = "ページのプレビュー";
         BackColor = Theme.PreviewBack;
-        _symbolFont = PageGlyphs.SymbolFont(10);
+        _symbolFont = PageGlyphs.SymbolFont(11);
         _settle.Tick += (_, _) =>
         {
             _settle.Stop();
@@ -597,13 +600,8 @@ internal sealed class PageStrip : ScrollableControl
     private void DrawTextButton(Graphics g, Rectangle rect, string text, bool hot)
     {
         using var fill = new SolidBrush(hot ? SystemColors.Highlight : Theme.OverlayButton);
-        using var edge = new Pen(hot ? SystemColors.Highlight : Theme.OverlayButtonEdge);
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        using (var path = RoundedRect(rect, LogicalToDeviceUnits(4)))
-        {
-            g.FillPath(fill, path);
-            g.DrawPath(edge, path);
-        }
+        using (var path = RoundedRect(rect, rect.Height / 2)) g.FillPath(fill, path); // 両端の丸い札
         g.SmoothingMode = SmoothingMode.Default;
         TextRenderer.DrawText(g, text, Font, rect, hot ? SystemColors.HighlightText : Theme.OverlayButtonText,
             TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
@@ -612,13 +610,8 @@ internal sealed class PageStrip : ScrollableControl
     private void DrawButton(Graphics g, Rectangle rect, string glyph, bool hot)
     {
         using var fill = new SolidBrush(hot ? SystemColors.Highlight : Theme.OverlayButton);
-        using var edge = new Pen(hot ? SystemColors.Highlight : Theme.OverlayButtonEdge);
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        using (var path = RoundedRect(rect, LogicalToDeviceUnits(4)))
-        {
-            g.FillPath(fill, path);
-            g.DrawPath(edge, path);
-        }
+        g.FillEllipse(fill, rect);
         g.SmoothingMode = SmoothingMode.Default;
         TextRenderer.DrawText(g, glyph, _symbolFont, rect, hot ? SystemColors.HighlightText : Theme.OverlayButtonText,
             TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);

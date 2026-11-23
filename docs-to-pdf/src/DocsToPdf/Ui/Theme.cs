@@ -61,8 +61,10 @@ internal static class Theme
 
     public static Color Cross => Pick(Color.FromArgb(150, 150, 150), Color.FromArgb(120, 120, 120));
 
-    /// <summary>ページに重ねる小さなボタン。ページ（白）の上に乗るので、両モードとも明るい地にする。</summary>
-    public static Color OverlayButton => Color.FromArgb(235, 255, 255, 255);
-    public static Color OverlayButtonEdge => Color.FromArgb(160, 160, 160);
-    public static Color OverlayButtonText => Color.FromArgb(32, 32, 32);
+    /// <summary>
+    /// ページに重ねる小さなボタン。ページ（白）の上に乗るので、両モードとも半透明の黒い地に白い記号にする
+    /// （白い地に枠だと、白いページの上で枠だけが浮いて見える）。
+    /// </summary>
+    public static Color OverlayButton => Color.FromArgb(185, 24, 24, 24);
+    public static Color OverlayButtonText => Color.White;
 }

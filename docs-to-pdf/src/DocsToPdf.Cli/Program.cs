@@ -198,7 +198,8 @@ internal static class Program
     {
         var inputs = new Argument<string[]>("入力")
         {
-            Description = "結合するファイルやフォルダ（フォルダはサブフォルダも含む）。書いた順に並べ、フォルダの中はファイル名の順",
+            Description = "結合するファイルやフォルダ（フォルダはサブフォルダも含む）。書いた順に並べ、フォルダの中はファイル名の順。"
+                + "画面版で保存した一覧（" + Composition.Extension + "）を 1 つ渡すと、その並びと指定のとおりに結合する",
             Arity = ArgumentArity.OneOrMore,
         };
         var output = new Option<string>("--out", "-o") { Description = "作る PDF のパス", Required = true, HelpName = "出力.pdf" };
@@ -207,6 +208,11 @@ internal static class Program
         var duplex = new Option<bool>("--duplex") { Description = "各ファイルが奇数ページから始まるよう、白紙を挟む（両面印刷用）" };
         var title = new Option<string?>("--title") { Description = "PDF の文書のタイトル（既定は出力のファイル名）", HelpName = "題名" };
         var open = new Option<bool>("--open") { Description = "作ったあと、既定のアプリで開く" };
+        var allowNetwork = new Option<bool>("--allow-network")
+        {
+            Description = "保存した一覧が、ほかのコンピューターの共有フォルダ（\\\\サーバー\\共有）のファイルを指していても使う"
+                + "（そこへ Windows のサインイン情報が送られるので、既定では使わない）",
+        };
         var flat = new Option<bool>("--no-folder-bookmarks")
         {
             Description = "フォルダを渡したとき、しおりをフォルダごとにまとめない（既定では、フォルダの段の下にファイルのしおりを入れる）",
@@ -214,7 +220,7 @@ internal static class Program
 
         var command = new Command("merge", "ファイルを PDF にして、ファイルごとのしおりを付けて 1 つに結合する")
         {
-            inputs, output, toc, numbers, duplex, title, BookmarkDepth, flat, open, Force, Timeout, Quiet,
+            inputs, output, toc, numbers, duplex, title, BookmarkDepth, flat, allowNetwork, open, Force, Timeout, Quiet,
         };
         command.SetAction((result, ct) => MergeAsync(
             result.GetValue(inputs)!, result.GetValue(output)!,
@@ -222,13 +228,17 @@ internal static class Program
             {
                 OutlineDepth = result.GetValue(BookmarkDepth),
             },
-            !result.GetValue(flat), result.GetValue(open), result.GetValue(Force), result.GetValue(Timeout), new Log(result.GetValue(Quiet)), ct));
+            !result.GetValue(flat), result.GetValue(open), result.GetValue(Force), result.GetValue(allowNetwork), result.GetValue(Timeout),
+            new Log(result.GetValue(Quiet)), ct));
         return command;
     }
 
     private static async Task<int> MergeAsync(string[] inputs, string output, MergeOptions options, bool folderBookmarks, bool open, bool force,
-        int timeoutMinutes, Log log, CancellationToken ct)
+        bool allowNetwork, int timeoutMinutes, Log log, CancellationToken ct)
     {
+        if (inputs is [var single] && Composition.IsCompositionFile(single))
+            return await MergeCompositionAsync(single, output, options, open, force, allowNetwork, timeoutMinutes, log, ct);
+
         var expanded = InputFiles.Expand(inputs, sortAll: false); // 書いた順に結合する
         var (files, rejected) = expanded;
         foreach (var path in rejected) log.Error($"見つからないか、扱えない形式です: {path}");
@@ -272,6 +282,94 @@ internal static class Program
             int pages = await Task.Run(() => PdfMerger.Merge(parts, options, target, ct: ct), ct);
 
             log.Progress($"作成しました（{files.Count} ファイル、{pages} ページ）");
+            log.Result(target);
+            if (open) ShellOpen(target, log);
+            return ExitCodes.Success;
+        });
+    }
+
+    /// <summary>
+    /// 画面版で保存した一覧（.docstopdf）のとおりに結合する。並び・使うページ・回したページ・しおり・オプションを当てる。
+    /// コマンドラインで付けたオプション（--toc など）は、一覧のオプションに足す。
+    /// </summary>
+    private static async Task<int> MergeCompositionAsync(string listPath, string output, MergeOptions options, bool open, bool force,
+        bool allowNetwork, int timeoutMinutes, Log log, CancellationToken ct)
+    {
+        Composition composition;
+        try
+        {
+            composition = CompositionFile.Load(listPath, _ => allowNetwork);
+        }
+        catch (NetworkPathsException ex)
+        {
+            log.Error($"{ex.Message}使ってよいなら --allow-network を付けてください。");
+            return ExitCodes.Usage;
+        }
+        catch (Exception ex) when (ex is FormatException or IOException or UnauthorizedAccessException)
+        {
+            log.Error($"一覧を読めません: {listPath}（{ex.Message}）");
+            return ExitCodes.Usage;
+        }
+
+        var items = composition.Items;
+        var missing = items.Where(i => !File.Exists(i.Path) || !FileEntry.TryGetKind(i.Path, out _)).ToList();
+        foreach (var item in missing) log.Error($"見つからないか、扱えない形式です: {item.Path}");
+        if (missing.Count > 0) return ExitCodes.Usage;
+        if (items.Count == 0)
+        {
+            log.Error("一覧にファイルがありません。");
+            return ExitCodes.Usage;
+        }
+
+        string target = Path.GetFullPath(output);
+        if (items.Any(i => string.Equals(i.Path, target, StringComparison.OrdinalIgnoreCase)))
+        {
+            log.Error($"出力先が入力のファイルと同じです: {target}");
+            return ExitCodes.Usage;
+        }
+        if (!CanWrite([target], force, log)) return ExitCodes.Failure;
+
+        var merged = composition.MergeOptions(options.DocumentTitle.Length > 0 ? options.DocumentTitle : Path.GetFileNameWithoutExtension(target)) with
+        {
+            PageNumbers = composition.PageNumbers || options.PageNumbers,
+            TableOfContents = composition.TableOfContents || options.TableOfContents,
+            DuplexBlanks = composition.DuplexBlanks || options.DuplexBlanks,
+            OutlineDepth = options.OutlineDepth ?? composition.OutlineDepth,
+        };
+
+        return await RunAsync(log, timeoutMinutes, async session =>
+        {
+            var requests = items.Select(i =>
+            {
+                FileEntry.TryGetKind(i.Path, out var kind);
+                return new ConvertRequest(i.Path, kind, i.Sheets, i.FitWidth, null);
+            }).ToList();
+            var converted = await session.ConvertAllAsync(requests, ct);
+            if (converted is null)
+            {
+                log.Error("結合できないファイルがあるため、PDF は作りませんでした。");
+                return ExitCodes.Failure;
+            }
+
+            var folders = Composition.FoldersOf(items, composition.FolderBookmarks, composition.FolderNames);
+            var parts = items.Select((item, i) => item.PartOf(converted[i]) with { Folders = folders[i] }).ToList();
+            var empty = parts.Where(p => p.Pages.Count == 0).Select(p => p.Title).ToList();
+            if (empty.Count > 0)
+            {
+                log.Error($"使うページが 1 枚もないファイルがあります（ページの指定が、変換し直したページ数に合いません）: {string.Join("、", empty)}");
+                return ExitCodes.Failure;
+            }
+            int stale = items.Where((item, i) =>
+                item.OutlineChanges is { } c && !c.AppliesTo(converted[i].Outline)
+                || item.PageBookmarks is { } b && !b.AppliesTo(converted[i].PageSizes)).Count();
+            if (stale > 0)
+                log.Progress($"{stale} 件のファイルは、一覧を保存したあとに中身が変わったため、しおりの手直しを当てませんでした");
+
+            log.Progress("結合しています...");
+            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+            int pages = await Task.Run(() => PdfMerger.Merge(parts, merged, target, ct: ct), ct);
+
+            log.Progress($"作成しました（{items.Count} ファイル、{pages} ページ）");
             log.Result(target);
             if (open) ShellOpen(target, log);
             return ExitCodes.Success;

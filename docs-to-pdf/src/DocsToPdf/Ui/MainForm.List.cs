@@ -89,6 +89,14 @@ internal sealed partial class MainForm
     {
         try { await previous; } catch { /* 前の追加の失敗は、そこで知らせ済み */ }
         if (IsDisposed) return;
+        // 保存した一覧が混じっていれば、先にそれを開いて一覧を置き換え、残りはそのあとに加える
+        if (paths.FirstOrDefault(Composition.IsCompositionFile) is { } list)
+        {
+            OpenComposition(list);
+            paths = [.. paths.Where(p => !Composition.IsCompositionFile(p))];
+            if (paths.Length == 0) return;
+            insertAt = null;
+        }
         try
         {
             InputFiles.Result result;
@@ -871,6 +879,9 @@ internal sealed partial class MainForm
                     return true;
                 case Keys.Control | Keys.V:
                     PasteFiles();
+                    return true;
+                case Keys.Control | Keys.S:
+                    SaveComposition();
                     return true;
                 case Keys.Control | Keys.Z:
                     Undo();

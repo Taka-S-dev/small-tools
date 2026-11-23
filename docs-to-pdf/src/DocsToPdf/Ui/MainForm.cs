@@ -63,6 +63,8 @@ internal sealed partial class MainForm : Form
     private readonly Button _remove = ToolButton("削除");
     private readonly Button _clear = ToolButton("すべて削除");
     private readonly Button _undo = ToolButton("元に戻す");
+    private readonly Button _openList = ToolButton("一覧を開く...");
+    private readonly Button _saveList = ToolButton("一覧を保存...");
 
     private readonly CheckBox _optPageNumbers = Option("ページ番号を入れる");
     private readonly CheckBox _optToc = Option("目次ページを付ける");
@@ -166,7 +168,7 @@ internal sealed partial class MainForm : Form
         // 上のボタン
         // 幅が足りないとき（表示倍率が大きい画面や、狭いウィンドウ）は、ボタンを切らずに 2 段に折り返す
         var toolbar = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, WrapContents = true, Margin = new Padding(0, 0, 0, 4) };
-        toolbar.Controls.AddRange([_addFiles, _addFolder, Gap(), _moveUp, _moveDown, _sortByName, Gap(), _remove, _clear, Gap(), _undo]);
+        toolbar.Controls.AddRange([_addFiles, _addFolder, Gap(), _moveUp, _moveDown, _sortByName, Gap(), _remove, _clear, Gap(), _undo, Gap(), _openList, _saveList]);
 
         // オプション
         var options = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(0, 8, 0, 0) };
@@ -220,6 +222,8 @@ internal sealed partial class MainForm : Form
         _toolTip.SetToolTip(_sortByName, "ファイル名の順（エクスプローラーと同じ数字の並び）に並べ替え");
         _toolTip.SetToolTip(_remove, "選んだ行をリストから外す（Delete）。ファイルは消えません");
         _toolTip.SetToolTip(_undo, "リストの変更を 1 つ戻す（Ctrl+Z）。やり直しは Ctrl+Y");
+        _toolTip.SetToolTip(_openList, "保存した一覧（" + Composition.Extension + "）を開き、今の一覧と置き換える。ウィンドウへのドロップでも開けます");
+        _toolTip.SetToolTip(_saveList, "ファイルの並び、使うページ、回したページ、しおり、オプションを保存し、あとで同じ PDF を作り直せるようにする（Ctrl+S）");
         _toolTip.SetToolTip(_optPageNumbers, "各ページの下に「3 / 25」の形で通し番号を入れます。\n元のファイルにページ番号があると、二重になります");
         _toolTip.SetToolTip(_optToc, "先頭に、しおり名とページ番号の一覧を付けます。行を押すとそのページへ飛べます。\n"
             + "目次ページの入った PDF（このツールで目次付きで作ったものなど）を結合すると、目次が二重になります");
@@ -283,6 +287,8 @@ internal sealed partial class MainForm : Form
         _remove.Click += (_, _) => RemoveSelected();
         _clear.Click += (_, _) => ClearAll();
         _undo.Click += (_, _) => Undo();
+        _openList.Click += (_, _) => ChooseComposition();
+        _saveList.Click += (_, _) => SaveComposition();
         _run.Click += async (_, _) => await CreateAsync(null);
         _runEach.Click += async (_, _) => await SaveEachAsync();
         _bookmarks.Click += (_, _) => ShowBookmarks();
@@ -692,6 +698,8 @@ internal sealed partial class MainForm : Form
         _remove.Enabled = idle && selected > 0;
         _clear.Enabled = idle && count > 0;
         _undo.Enabled = idle && _undoStack.Count > 0;
+        _openList.Enabled = idle;
+        _saveList.Enabled = idle && count > 0;
         // フォルダの中を探している間は、見つかったものがまだ一覧に入っていないので作成させない
         _run.Enabled = idle && count > 0 && !IsScanning;
         _runEach.Enabled = _run.Enabled;

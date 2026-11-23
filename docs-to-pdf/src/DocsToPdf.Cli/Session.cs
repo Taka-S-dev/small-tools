@@ -21,25 +21,36 @@ internal sealed class Session : IDisposable
     }
 
     /// <summary>ファイルを順に PDF にする。1 つでも失敗すれば、理由を出して null を返す。</summary>
-    public async Task<IReadOnlyList<ConvertedPdf>?> ConvertAllAsync(IReadOnlyList<string> files, CancellationToken ct)
+    public Task<IReadOnlyList<ConvertedPdf>?> ConvertAllAsync(IReadOnlyList<string> files, CancellationToken ct) =>
+        ConvertAllAsync(files.Select(RequestOf).ToList(), ct);
+
+    /// <summary>シートや幅の指定つきで、順に PDF にする。1 つでも失敗すれば、理由を出して null を返す。</summary>
+    public async Task<IReadOnlyList<ConvertedPdf>?> ConvertAllAsync(IReadOnlyList<ConvertRequest> requests, CancellationToken ct)
     {
-        var results = await ConvertEachAsync(files, ct);
+        var results = await ConvertEachAsync(requests, ct);
         return results.All(r => r is not null) ? results.Select(r => r!).ToList() : null;
+    }
+
+    private static ConvertRequest RequestOf(string file)
+    {
+        FileEntry.TryGetKind(file, out var kind);
+        return new ConvertRequest(file, kind, null, false, null);
     }
 
     /// <summary>
     /// ファイルを順に PDF にする。失敗したファイルは理由を出し、その位置を null にして返す。
     /// onConverted は 1 件変換できるたびに呼ぶ（ファイルごとに書き出すとき、終わったものから書き出せるように）。
     /// </summary>
-    public async Task<IReadOnlyList<ConvertedPdf?>> ConvertEachAsync(IReadOnlyList<string> files, CancellationToken ct,
+    public Task<IReadOnlyList<ConvertedPdf?>> ConvertEachAsync(IReadOnlyList<string> files, CancellationToken ct,
+        Func<int, ConvertedPdf, Task>? onConverted = null) =>
+        ConvertEachAsync(files.Select(RequestOf).ToList(), ct, onConverted);
+
+    private async Task<IReadOnlyList<ConvertedPdf?>> ConvertEachAsync(IReadOnlyList<ConvertRequest> requests, CancellationToken ct,
         Func<int, ConvertedPdf, Task>? onConverted = null)
     {
+        var files = requests.Select(r => r.Path).ToList();
         // 依頼は先にまとめて出す（PDF と画像は Office と並行して進む）。結果は並び順に受け取って表示する
-        var tasks = files.Select(file =>
-        {
-            FileEntry.TryGetKind(file, out var kind);
-            return _service.ConvertAsync(new ConvertRequest(file, kind, null, false, null), null, ct);
-        }).ToList();
+        var tasks = requests.Select(request => _service.ConvertAsync(request, null, ct)).ToList();
 
         var results = new List<ConvertedPdf?>();
         int failed = 0;

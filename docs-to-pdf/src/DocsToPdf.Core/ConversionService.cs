@@ -158,7 +158,7 @@ internal sealed class ConversionService : IDisposable
 
                             if (!File.Exists(pdf))
                                 throw new InvalidOperationException("PDF が作られませんでした。");
-                            return Finish(pdf, stamp, sheets);
+                            return Finish(pdf, stamp, sheets, slides: request.Kind == FileKind.PowerPoint);
                         }
                         catch (Exception ex) when (ex is not OperationCanceledException
                                                    && LooksLikePasswordProblem(ex, copy, passwordGiven: request.Password is not null))
@@ -264,9 +264,11 @@ internal sealed class ConversionService : IDisposable
         return Finish(pdf, stamp, null);
     }
 
-    private static ConvertOutcome Finish(string pdf, SourceStamp stamp, IReadOnlyList<SheetInfo>? sheets)
+    /// <param name="slides">PowerPoint から作った PDF。しおりの「スライド N:」を外す。</param>
+    private static ConvertOutcome Finish(string pdf, SourceStamp stamp, IReadOnlyList<SheetInfo>? sheets, bool slides = false)
     {
         var (sizes, outline) = PdfInfo.Read(pdf);
+        if (slides) outline = SlideTitles.Strip(outline);
         if (sizes.Count == 0)
             throw new InvalidOperationException("出力するページがありません。");
 

@@ -220,8 +220,9 @@ internal sealed partial class MainForm : Form
         _toolTip.SetToolTip(_sortByName, "ファイル名の順（エクスプローラーと同じ数字の並び）に並べ替え");
         _toolTip.SetToolTip(_remove, "選んだ行をリストから外す（Delete）。ファイルは消えません");
         _toolTip.SetToolTip(_undo, "リストの変更を 1 つ戻す（Ctrl+Z）。やり直しは Ctrl+Y");
-        _toolTip.SetToolTip(_optPageNumbers, "各ページの下に「3 / 25」の形で通し番号を入れます");
-        _toolTip.SetToolTip(_optToc, "先頭に、しおり名とページ番号の一覧を付けます。行を押すとそのページへ飛べます");
+        _toolTip.SetToolTip(_optPageNumbers, "各ページの下に「3 / 25」の形で通し番号を入れます。\n元のファイルにページ番号があると、二重になります");
+        _toolTip.SetToolTip(_optToc, "先頭に、しおり名とページ番号の一覧を付けます。行を押すとそのページへ飛べます。\n"
+            + "目次ページの入った PDF（このツールで目次付きで作ったものなど）を結合すると、目次が二重になります");
         _toolTip.SetToolTip(_optDuplex, "各ファイルが紙の表（奇数ページ）から始まるよう、必要なところに白紙を入れます");
         _toolTip.SetToolTip(_optOpen, "できあがった PDF をすぐに開きます");
         _toolTip.SetToolTip(_bookmarks, BookmarksTip);

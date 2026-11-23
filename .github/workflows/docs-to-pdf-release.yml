@@ -45,10 +45,11 @@ jobs:
           dotnet publish src/DocsToPdf -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o publish
           dotnet publish src/DocsToPdf.Cli -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o publish
           $files = 'publish/DocsToPdf.exe', 'publish/DocsToPdfCli.exe'
-          # 落とした exe が壊れていないか、利用者が確かめられるようにする
-          Get-FileHash $files -Algorithm SHA256 |
-            ForEach-Object { "$($_.Hash.ToLowerInvariant())  $(Split-Path $_.Path -Leaf)" } |
-            Set-Content publish/SHA256SUMS.txt -Encoding ascii
+          # 落とした exe が壊れていないか、利用者が確かめられるようにする。
+          # sha256sum -c で読めるよう、改行は LF にする（CRLF だとファイル名の末尾に CR が付いて読めない）
+          $lines = Get-FileHash $files -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash.ToLowerInvariant())  $(Split-Path $_.Path -Leaf)" }
+          [IO.File]::WriteAllText((Join-Path $PWD 'publish/SHA256SUMS.txt'), ($lines -join "`n") + "`n")
 
       - name: Releases に置く
         env:

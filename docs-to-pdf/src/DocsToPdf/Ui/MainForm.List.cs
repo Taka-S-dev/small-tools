@@ -851,10 +851,18 @@ internal sealed partial class MainForm
         e.SuppressKeyPress = true;
     }
 
+    /// <summary>今キーボードの入力先になっている部品（入れ子の中までたどる）。</summary>
+    private Control? FocusedControl()
+    {
+        Control? control = ActiveControl;
+        while (control is ContainerControl { ActiveControl: { } inner }) control = inner;
+        return control;
+    }
+
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
-        // 入力欄で書いている間は、貼り付けや元に戻すを入力欄に任せる
-        if (_editor is null)
+        // 入力欄（一覧の名前・ページ指定や、プレビューの使うページ）で書いている間は、貼り付けや元に戻すを入力欄に任せる
+        if (_editor is null && FocusedControl() is not TextBoxBase)
         {
             switch (keyData)
             {

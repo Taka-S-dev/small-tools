@@ -802,6 +802,10 @@ internal sealed class PreviewPane : UserControl
     private readonly Label _title = new() { AutoEllipsis = true, Dock = DockStyle.Fill, Margin = new Padding(0, 0, 0, 2) };
     private readonly Label _info = new() { AutoEllipsis = true, Dock = DockStyle.Fill, ForeColor = SystemColors.GrayText, Margin = new Padding(0, 0, 0, 2) };
     private readonly FlowLayoutPanel _actions = new() { AutoSize = true, Dock = DockStyle.Fill, WrapContents = true, Margin = Padding.Empty };
+    // 使うページの指定。ページを押して選ぶと書き換わり、書いて Enter を押せばページの選択が変わる（一覧の「ページ指定」と同じ値）
+    private readonly FlowLayoutPanel _rangeRow = new() { AutoSize = true, Dock = DockStyle.Fill, WrapContents = false, Margin = new Padding(0, 2, 0, 2) };
+    private readonly TextBox _range = new() { Width = 180, PlaceholderText = "すべて（例: 1-3,5,8-）", AccessibleName = "使うページ" };
+    private readonly ToolTip _toolTip = new();
     private readonly PageStrip _strip = new() { Dock = DockStyle.Fill };
     private FileEntry? _entry;
 
@@ -813,7 +817,26 @@ internal sealed class PreviewPane : UserControl
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         header.Controls.Add(_title);
         header.Controls.Add(_info);
+        _rangeRow.Controls.Add(new Label { Text = "使うページ", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 4, 6, 0) });
+        _rangeRow.Controls.Add(_range);
+        header.Controls.Add(_rangeRow);
         header.Controls.Add(_actions);
+        _toolTip.SetToolTip(_range, "結合に使うページを「1-3,5」「8-」のように書いて Enter。空にするとすべて。\nページを押して選んでも、ここが書き換わります（一覧の「ページ指定」と同じ）");
+        _range.KeyDown += (_, e) =>
+        {
+            if (e.KeyCode == Keys.Enter)
+            {
+                e.SuppressKeyPress = true;
+                CommitRange();
+            }
+            else if (e.KeyCode == Keys.Escape)
+            {
+                e.SuppressKeyPress = true;
+                ShowRange(); // 書く前に戻す
+            }
+        };
+        // ほかの場所を押したときは、書いた指定で確定する
+        _range.Leave += (_, _) => CommitRange();
 
         Controls.Add(_strip);
         Controls.Add(header);
@@ -852,6 +875,8 @@ internal sealed class PreviewPane : UserControl
     }
 
     public event Action<FileEntry, int>? PageToggled;
+    /// <summary>使うページの欄に書かれた指定（書いたままの文字列）。正しく読めるかは受け取る側が確かめる。</summary>
+    public event Action<FileEntry, string>? PageRangeEdited;
     public event Action<FileEntry, int>? PageBookmarkRequested;
     public event Action<FileEntry, int>? PageZoomRequested;
     public event Action<FileEntry, int, int>? PageRotateRequested;
@@ -865,11 +890,31 @@ internal sealed class PreviewPane : UserControl
 
     public FileEntry? Entry => _entry;
 
+    private void CommitRange()
+    {
+        if (_entry is not { } entry || !_range.Enabled || _range.Text.Trim() == entry.PageRange) return;
+        PageRangeEdited?.Invoke(entry, _range.Text);
+        ShowRange(); // 受け取る側で整えた形（空白を除くなど）か、正しく読めなかったときは元の指定を出し直す
+    }
+
+    private void ShowRange() => _range.Text = _entry?.PageRange ?? "";
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) _toolTip.Dispose();
+        base.Dispose(disposing);
+    }
+
     /// <param name="entry">1 件だけ選ばれているときの、その行。</param>
     /// <param name="locked">作成中で、変更を受け付けないとき。</param>
     public void Display(FileEntry? entry, int selectedCount, int totalCount, bool locked)
     {
+        bool sameEntry = ReferenceEquals(_entry, entry);
         _entry = entry;
+        _rangeRow.Visible = entry is { State: EntryState.Ready };
+        _range.Enabled = !locked;
+        // 書いている途中で見出しが作り直されても（ほかの行の変換が終わったときなど）、書きかけを消さない
+        if (!sameEntry || !_range.Focused) ShowRange();
         _actions.SuspendLayout();
         foreach (Control old in _actions.Controls.Cast<Control>().ToList()) old.Dispose();
         _actions.Controls.Clear();

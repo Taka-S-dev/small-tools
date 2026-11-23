@@ -318,6 +318,16 @@ internal sealed partial class MainForm : Form
         _preview.PasswordRequested += AskPassword;
         _preview.RetryRequested += entry => Retry([entry]);
         _preview.UseAllPagesRequested += entry => SetPageRange(entry, "");
+        _preview.PageRangeEdited += (entry, text) =>
+        {
+            if (PageRange.IsValid(text))
+            {
+                SetPageRange(entry, text);
+                return;
+            }
+            System.Media.SystemSounds.Beep.Play();
+            SetStatus("ページ指定は「1-3,5」のように、ページ番号をカンマとハイフンで書いてください。");
+        };
         _preview.ResetSheetsRequested += entry =>
         {
             PushUndo();
